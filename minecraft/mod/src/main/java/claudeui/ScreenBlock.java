@@ -17,12 +17,10 @@ import net.minecraft.world.phys.BlockHitResult;
 
 /**
  * Claude Screen: build a flat wall of these in a TV-shaped rectangle and it shows the Claude Code UI.
- * Right-click opens the UI to type.
+ * Aim at it to use it like a screen (see TvInput on the client).
  */
 public final class ScreenBlock extends HorizontalDirectionalBlock implements EntityBlock {
 	public static final MapCodec<ScreenBlock> CODEC = simpleCodec(ScreenBlock::new);
-	/** Set by the client entry point; the common code can't reference client classes. */
-	public static Runnable openUi = () -> {};
 
 	public ScreenBlock(Properties properties) {
 		super(properties);
@@ -52,9 +50,9 @@ public final class ScreenBlock extends HorizontalDirectionalBlock implements Ent
 		return new ScreenBlockEntity(pos, state);
 	}
 
+	/** Clicks on a working wall's front are handled client-side (TvInput); everything else behaves like a normal block. */
 	@Override
 	protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
-		if (level.isClientSide()) openUi.run();
-		return InteractionResult.SUCCESS;
+		return InteractionResult.PASS;
 	}
 }

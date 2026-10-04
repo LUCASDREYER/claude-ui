@@ -20,12 +20,12 @@ public final class ClaudeUIClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		KeyMapping.Category category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("claudeui", "main"));
 		BlockEntityRenderers.register(ClaudeUIMod.SCREEN_ENTITY, ScreenRenderer::new);
-		ScreenBlock.openUi = () -> open(Minecraft.getInstance());
 		ClaudeUIMod.screenAvailable = () -> {
 			Minecraft mc = Minecraft.getInstance();
 			return mc.getConnection() == null || mc.hasSingleplayerServer() || ClientPlayNetworking.canSend(HelloPayload.TYPE);
 		};
 		openKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.claudeui.open", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_K, category));
+		ClientTickEvents.START_CLIENT_TICK.register(TvInput::tick);
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (openKey.consumeClick()) open(client);
 			AutoTest.tick(client);

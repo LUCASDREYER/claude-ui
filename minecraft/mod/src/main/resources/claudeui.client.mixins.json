@@ -1,0 +1,7 @@
+{
+	"required": true,
+	"package": "claudeui.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": ["MouseHandlerMixin"],
+	"injectors": { "defaultRequire": 1 }
+}

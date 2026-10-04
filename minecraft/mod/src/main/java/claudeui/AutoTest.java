@@ -137,14 +137,35 @@ final class AutoTest {
 				.anyMatch(stack -> stack.is(ClaudeUIMod.SCREEN_ITEM));
 			System.out.println("[claudeui servertest] singleplayer=" + mc.hasSingleplayerServer() + " available=" + ClaudeUIMod.screenAvailable.getAsBoolean() + " inCreativeTab=" + listed);
 		}
-		if (inWorld == 140) shot(mc, "tv-1-home");
-		if (inWorld == 145) {
+		if (inWorld == 120) {
+			// the cinema's bottom-left (seen from the front) is its east end; aim at the sidebar's "Projects" row
+			BlockPos p = mc.player.blockPosition();
+			BlockPos origin = new BlockPos(p.getX() + 23, p.getY(), p.getZ() + 30);
+			mc.player.lookAt(net.minecraft.commands.arguments.EntityAnchorArgument.Anchor.EYES,
+				TvInput.worldPoint(origin, net.minecraft.core.Direction.NORTH, 48, 20, 86, 113));
+		}
+		if (inWorld == 130) shot(mc, "tv-1-aim");
+		if (inWorld == 135) {
+			TvInput.Target t = TvInput.find(mc, 1.0f);
+			System.out.println("[claudeui walltest] target=" + t);
+			if (t != null) ScreenRenderer.view(t.canvasW()).clickAt(t.x(), t.y());
+		}
+		if (inWorld == 160) shot(mc, "tv-2-clicked");
+		if (inWorld == 165) {
+			ClaudeScreen.setDraft("hello from the wall");
+			TypeScreen.open();
+		}
+		if (inWorld == 185) shot(mc, "tv-3-typing");
+		if (inWorld == 190) {
+			mc.setScreen(null);
+			ClaudeScreen.setDraft("");
+			ClaudeScreen.select(ClaudeScreen.Section.HOME);
 			BlockPos p = mc.player.blockPosition();
 			MinecraftServer server = mc.getSingleplayerServer();
 			server.execute(() -> server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), "tp @p " + p.getX() + " " + p.getY() + " " + (p.getZ() + 0.5) + " 180 -10"));
 		}
-		if (inWorld == 220) shot(mc, "tv-2-hint");
-		if (inWorld == 240) mc.stop();
+		if (inWorld == 230) shot(mc, "tv-4-hint");
+		if (inWorld == 245) mc.stop();
 	}
 
 	private static void shot(Minecraft mc, String name) {

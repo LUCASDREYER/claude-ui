@@ -165,15 +165,20 @@ public final class ClaudeScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+		return clickAt(event.x(), event.y()) || super.mouseClicked(event, doubleClick);
+	}
+
+	/** Runs whatever was drawn under (x, y) in the last frame; also how a Claude Screen wall is clicked. */
+	boolean clickAt(double x, double y) {
 		for (int i = hits.size() - 1; i >= 0; i--) {
 			Hit hit = hits.get(i);
-			if (hit.action() != null && hit.contains(event.x(), event.y())) {
+			if (hit.action() != null && hit.contains(x, y)) {
 				Minecraft.getInstance().getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
 				hit.action().run();
 				return true;
 			}
 		}
-		return super.mouseClicked(event, doubleClick);
+		return false;
 	}
 
 	@Override
@@ -188,17 +193,33 @@ public final class ClaudeScreen extends Screen {
 	}
 
 	private void run() {
-		String text = input.getValue().strip();
+		send(offscreen ? draft : input.getValue());
+	}
+
+	/** Sends a message the way Run does; used by this screen, by walls, and by the wall's typing box. */
+	static void send(String raw) {
+		String text = raw.strip();
 		if (text.isEmpty()) return;
+		Model m = ClaudeUIClient.CONNECTION.model;
+		setDraft("");
 		if (m.running) {
 			m.prompt(text); // the server says it's busy; keeps the text visible in the session
 			return;
 		}
-		input.setValue("");
 		select(Section.SESSION);
 		boolean inWorktree = m.cwd.contains("/.claude/worktrees/");
 		if (m.sessionId == null && worktree && !inWorktree) m.newSession(null, true, text);
 		else m.prompt(text);
+	}
+
+	static String draft() {
+		return draft;
+	}
+
+	/** The message being typed, shared by this screen, the walls and the wall's typing box. */
+	static void setDraft(String text) {
+		draft = text;
+		if (current != null && current.input != null && !current.input.getValue().equals(text)) current.input.setValue(text);
 	}
 
 	// ---------- render
@@ -258,7 +279,27 @@ public final class ClaudeScreen extends Screen {
 		if (max > 0) scrollbar(g, offset, max);
 
 		promptBar(g);
+		if (offscreen) hit(ix, iy, iw, ih, TypeScreen::open, List.of(Component.literal("Click to type a message")));
 		buttons(g, mx, my);
+		if (offscreen) wallTooltip(g, mx, my);
+	}
+
+	/** Tooltips on a wall, drawn into the picture since there's no screen overlay out in the world. */
+	private void wallTooltip(Canvas g, int mx, int my) {
+		for (int i = hits.size() - 1; i >= 0; i--) {
+			Hit hit = hits.get(i);
+			if (hit.tooltip() == null || hit.tooltip().isEmpty() || !hit.contains(mx, my)) continue;
+			List<FormattedCharSequence> lines = new ArrayList<>();
+			for (Component c : hit.tooltip()) lines.addAll(font.split(c, 220));
+			if (lines.size() > 10) lines = new ArrayList<>(lines.subList(0, 10));
+			int w = 0;
+			for (FormattedCharSequence l : lines) w = Math.max(w, font.width(l));
+			int h = lines.size() * 10 + 6, x = Math.min(mx + 10, width - w - 12), y = Math.max(2, Math.min(my + 10, height - h - 2));
+			g.fill(x - 1, y - 1, x + w + 9, y + h + 1, 0xFF5C2DA0);
+			g.fill(x, y, x + w + 8, y + h, 0xF0100010);
+			for (int j = 0; j < lines.size(); j++) g.text(lines.get(j), x + 4, y + 4 + j * 10, TEXT);
+			return;
+		}
 	}
 
 	private void tabs(Canvas g, int mx, int my) {
@@ -311,8 +352,7 @@ public final class ClaudeScreen extends Screen {
 			int x = sx + 2, w = sw - 4;
 			boolean hover = mx >= x && mx < x + w && my >= y && my < y + rowH;
 			if (s == section && !attachOpen) {
-				g.fill(x, y, x + w, y + rowH, SELECT_EDGE);
-				g.fill(x + 1, y + 1, x + w - 1, y + rowH - 1, SELECT_BG);
+				box(g, x, y, w, rowH, SELECT_EDGE, SELECT_BG);
 			} else if (hover) {
 				g.fill(x, y, x + w, y + rowH, CARD_HOVER);
 			}
@@ -374,7 +414,7 @@ public final class ClaudeScreen extends Screen {
 			Model.Project local = m.projects.stream().filter(p -> pr.repo().equals(p.repo())).findFirst().orElse(null);
 			int top = y, bw = font.width("Review") + 10;
 			y = card(g, mx, my, y, Items.FILLED_MAP, pr.draft() ? FAINT : GREEN, pr.title(), "#" + pr.number() + " · " + pr.repo(), ago(pr.updatedAt()), local != null ? bw + 6 : 0, false,
-				() -> ConfirmLinkScreen.confirmLinkNow(this, pr.url()),
+				() -> ConfirmLinkScreen.confirmLinkNow(offscreen ? null : this, pr.url()),
 				List.of(Component.literal(pr.title()), Component.literal(pr.url()).withStyle(ChatFormatting.GRAY), Component.literal("Click to open in your browser").withStyle(ChatFormatting.GRAY)));
 			if (local != null) {
 				int bx = cx + cw - 22 - bw - font.width(ago(pr.updatedAt())), byy = top + 7;
@@ -456,8 +496,7 @@ public final class ClaudeScreen extends Screen {
 				() -> {
 					if (f.dir()) m.listDir(path);
 					else {
-						String v = input.getValue();
-						input.setValue((v.isEmpty() || v.endsWith(" ") ? v : v + " ") + "@" + path + " ");
+						setDraft((draft.isEmpty() || draft.endsWith(" ") ? draft : draft + " ") + "@" + path + " ");
 						attachOpen = false;
 					}
 				}, null);
@@ -493,8 +532,7 @@ public final class ClaudeScreen extends Screen {
 	private int card(Canvas g, int mx, int my, int y, Item icon, int dotColor, String title, String sub, String right, int reserve, boolean selected, Runnable action, List<Component> tooltip) {
 		int x = cx + 4, w = cw - 8, h = 26;
 		boolean hover = mx >= x && mx < x + w && my >= y && my < y + h && my >= cy && my < cy + ch;
-		g.fill(x, y, x + w, y + h, selected ? SELECT_EDGE : CARD_EDGE);
-		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, selected ? SELECT_BG : hover ? CARD_HOVER : CARD);
+		box(g, x, y, w, h, selected ? SELECT_EDGE : CARD_EDGE, selected ? SELECT_BG : hover ? CARD_HOVER : CARD);
 		g.item(new ItemStack(icon), x + 5, y + 5, 16);
 		dot(g, x + 27, y + 6, dotColor);
 		int rightW = (right.isEmpty() ? 0 : font.width(right) + 8) + reserve;
@@ -509,10 +547,8 @@ public final class ClaudeScreen extends Screen {
 	private int option(Canvas g, int mx, int my, int y, String title, String sub, boolean on, Runnable action) {
 		int x = cx + 4, w = cw - 8, h = 22;
 		boolean hover = mx >= x && mx < x + w && my >= y && my < y + h;
-		g.fill(x, y, x + w, y + h, on ? SELECT_EDGE : CARD_EDGE);
-		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, on ? SELECT_BG : hover ? CARD_HOVER : CARD);
-		g.fill(x + 6, y + 7, x + 14, y + 15, on ? 0xFF9BC1FF : 0xFF5A5A5A);
-		if (!on) g.fill(x + 7, y + 8, x + 13, y + 14, CARD);
+		box(g, x, y, w, h, on ? SELECT_EDGE : CARD_EDGE, on ? SELECT_BG : hover ? CARD_HOVER : CARD);
+		box(g, x + 6, y + 7, 8, 8, on ? 0xFF9BC1FF : 0xFF5A5A5A, on ? 0xFF9BC1FF : CARD);
 		g.text(fit(title, w - 30), x + 20, y + 3, TEXT);
 		g.text(fit(sub, w - 30), x + 20, y + 12, FAINT);
 		hit(x, y, w, h, action, null);
@@ -524,7 +560,7 @@ public final class ClaudeScreen extends Screen {
 		switch (e.kind) {
 			case USER -> {
 				int h = lines.size() * 10 + 6;
-				g.fill(x - 2, y, x + width, y + h, 0xFF262626);
+				g.fill(x, y, x + width, y + h, 0xFF262626);
 				g.fill(x - 2, y, x, y + h, ORANGE);
 				for (int i = 0; i < lines.size(); i++) g.text(lines.get(i), x + 5, y + 3 + i * 10, TEXT);
 				return y + h + 5;
@@ -632,8 +668,7 @@ public final class ClaudeScreen extends Screen {
 		if (body.size() > 16) body = new ArrayList<>(body.subList(0, 16));
 		int questionRows = p.questions == null ? 0 : p.questions.stream().mapToInt(q -> 1 + q.options().size()).sum();
 		int h = 16 + body.size() * 10 + questionRows * 16 + 22;
-		g.fill(x, y, x + w, y + h, ORANGE);
-		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, 0xFF2B2219);
+		box(g, x, y, w, h, ORANGE, 0xFF2B2219);
 		g.text(fit(title, w - 12), x + 6, y + 5, YELLOW);
 		int ly = y + 17;
 		for (FormattedCharSequence l : body) {
@@ -673,9 +708,7 @@ public final class ClaudeScreen extends Screen {
 	}
 
 	private void promptBar(Canvas g) {
-		g.fill(ix, iy, ix + iw, iy + ih, BLACK);
-		g.fill(ix + 1, iy + 1, ix + iw - 1, iy + ih - 1, 0xFF101010);
-		g.fill(ix + 1, iy + 1, ix + iw - 1, iy + 2, 0xFF3A3A3A);
+		box(g, ix, iy, iw, ih, BLACK, 0xFF101010);
 		g.text(">_", ix + 6, iy + 5, TEXT);
 		g.fill(ix + 18, iy + 4, ix + 19, iy + ih - 4, 0xFF4A4A4A);
 		if (offscreen && !draft.isEmpty()) g.text(fit(draft, iw - 30), ix + 24, iy + 5, TEXT);
@@ -744,7 +777,6 @@ public final class ClaudeScreen extends Screen {
 
 	/** Registers a click / hover area; parts outside the scrolling pane are trimmed so they can't be clicked. */
 	private void hit(int x, int y, int w, int h, Runnable action, List<Component> tooltip) {
-		if (offscreen) return;
 		boolean inContent = x >= cx && x < cx + cw && y < cy + ch + 40 && y + h > cy - 40 && !(y >= iy);
 		if (inContent) {
 			int top = Math.max(y, cy + 1), bottom = Math.min(y + h, cy + ch - 1);
@@ -757,30 +789,51 @@ public final class ClaudeScreen extends Screen {
 
 	// ---------- drawing helpers
 
+	// Shapes are built from strips that never overlap: on a Claude Screen wall seen at an angle, stacked fills of
+	// different colors flicker through each other.
+
+	/** A rectangle with a 1px border. */
+	static void box(Canvas g, int x, int y, int w, int h, int edge, int fill) {
+		g.fill(x, y, x + w, y + 1, edge);
+		g.fill(x, y + h - 1, x + w, y + h, edge);
+		g.fill(x, y + 1, x + 1, y + h - 1, edge);
+		g.fill(x + w - 1, y + 1, x + w, y + h - 1, edge);
+		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, fill);
+	}
+
 	/** Inventory-style raised frame. */
 	static void panel(Canvas g, int x, int y, int w, int h) {
-		g.fill(x + 1, y, x + w - 1, y + h, BLACK);
-		g.fill(x, y + 1, x + w, y + h - 1, BLACK);
-		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, PANEL);
+		g.fill(x + 1, y, x + w - 1, y + 1, BLACK);
+		g.fill(x + 1, y + h - 1, x + w - 1, y + h, BLACK);
+		g.fill(x, y + 1, x + 1, y + h - 1, BLACK);
+		g.fill(x + w - 1, y + 1, x + w, y + h - 1, BLACK);
 		g.fill(x + 1, y + 1, x + w - 3, y + 3, HI);
-		g.fill(x + 1, y + 1, x + 3, y + h - 3, HI);
-		g.fill(x + 3, y + h - 3, x + w - 1, y + h - 1, SHADOW);
+		g.fill(x + 1, y + 3, x + 3, y + h - 3, HI);
+		g.fill(x + w - 3, y + 1, x + w - 1, y + 3, PANEL);
 		g.fill(x + w - 3, y + 3, x + w - 1, y + h - 1, SHADOW);
+		g.fill(x + 3, y + h - 3, x + w - 3, y + h - 1, SHADOW);
+		g.fill(x + 1, y + h - 3, x + 3, y + h - 1, PANEL);
+		g.fill(x + 3, y + 3, x + w - 3, y + h - 3, PANEL);
 	}
 
 	static void bevel(Canvas g, int x, int y, int w, int h, int face) {
-		g.fill(x, y, x + w, y + h, BLACK);
-		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, face);
-		g.fill(x + 1, y + 1, x + w - 1, y + 2, HI);
-		g.fill(x + 1, y + 1, x + 2, y + h - 1, HI);
-		g.fill(x + 1, y + h - 2, x + w - 1, y + h - 1, SHADOW);
+		g.fill(x, y, x + w, y + 1, BLACK);
+		g.fill(x, y + h - 1, x + w, y + h, BLACK);
+		g.fill(x, y + 1, x + 1, y + h - 1, BLACK);
+		g.fill(x + w - 1, y + 1, x + w, y + h - 1, BLACK);
+		g.fill(x + 1, y + 1, x + w - 2, y + 2, HI);
 		g.fill(x + w - 2, y + 1, x + w - 1, y + h - 1, SHADOW);
+		g.fill(x + 1, y + 2, x + 2, y + h - 2, HI);
+		g.fill(x + 1, y + h - 2, x + w - 2, y + h - 1, SHADOW);
+		g.fill(x + 2, y + 2, x + w - 2, y + h - 2, face);
 	}
 
 	/** Sunken dark pane. */
 	static void pane(Canvas g, int x, int y, int w, int h) {
-		g.fill(x, y, x + w, y + h, 0xFF373737);
-		g.fill(x + 1, y + 1, x + w, y + h, HI);
+		g.fill(x, y, x + w, y + 1, 0xFF373737);
+		g.fill(x, y + 1, x + 1, y + h, 0xFF373737);
+		g.fill(x + 1, y + h - 1, x + w, y + h, HI);
+		g.fill(x + w - 1, y + 1, x + w, y + h - 1, HI);
 		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, PANE);
 	}
 

@@ -30,19 +30,20 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 	private static final int SCAN_W = 160, SCAN_H = 96;
 	/** Re-measure a wall at most this often (ticks); a 100-block-wide scan every frame would cost frame rate. */
 	private static final long REMEASURE_TICKS = 10;
-	private static final java.util.Map<Long, long[]> measured = new java.util.HashMap<>(); // pos -> {w, h, gameTime}
+	private static final java.util.Map<Long, long[]> measured = new java.util.HashMap<>(); // pos -> {w, h, gameTime, facing}
 	/** Canvas height in UI pixels; the width follows the wall's ratio. */
-	private static final int CANVAS_H = 270;
+	static final int CANVAS_H = 270;
+	/** One laid-out UI per canvas width; walls of the same shape share it, and clicks use its last layout. */
+	private static final java.util.Map<Integer, ClaudeScreen> views = new java.util.HashMap<>();
 
 	public static final class State extends BlockEntityRenderState {
 		int w, h;
 		boolean valid;
 		Direction facing = Direction.NORTH;
+		double pointerX = Double.NaN, pointerY = Double.NaN;
 	}
 
 	private final Font font;
-	private ClaudeScreen view;
-	private int viewW, viewH;
 
 	public ScreenRenderer(BlockEntityRendererProvider.Context context) {
 		this.font = context.font();
@@ -57,6 +58,7 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 	public void extractRenderState(ScreenBlockEntity entity, State state, float partialTick, Vec3 camera, ModelFeatureRenderer.CrumblingOverlay crumbling) {
 		BlockEntityRenderer.super.extractRenderState(entity, state, partialTick, camera, crumbling);
 		state.w = state.h = 0;
+		state.pointerX = state.pointerY = Double.NaN;
 		Level level = entity.getLevel();
 		if (level == null) return;
 		state.facing = entity.getBlockState().getValue(HorizontalDirectionalBlock.FACING);
@@ -64,18 +66,47 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 		Direction right = state.facing.getCounterClockWise();
 		// Cheap per-frame test: only the bottom-left block of a wall does anything.
 		if (is(level, pos.relative(right.getOpposite()), state.facing) || is(level, pos.below(), state.facing)) return;
-		long now = level.getGameTime();
-		long[] cached = measured.get(pos.asLong());
-		if (cached == null || now - cached[2] >= REMEASURE_TICKS || now < cached[2]) {
-			int[] size = measure(level, pos, state.facing);
-			cached = new long[] {size == null ? 0 : size[0], size == null ? 0 : size[1], now};
-			measured.put(pos.asLong(), cached);
-			if (measured.size() > 256) measured.clear();
+		int[] size = wall(level, pos, state.facing);
+		if (size == null) return;
+		state.w = size[0];
+		state.h = size[1];
+		state.valid = valid(state.w, state.h);
+		TvInput.Target aimed = state.valid ? TvInput.pointer(partialTick) : null;
+		if (aimed != null && aimed.origin().equals(pos)) {
+			state.pointerX = aimed.x();
+			state.pointerY = aimed.y();
 		}
-		state.w = (int) cached[0];
-		state.h = (int) cached[1];
-		double ratio = state.h == 0 ? 0 : state.w / (double) state.h;
-		state.valid = state.w >= 2 && state.w <= MAX_W && state.h <= MAX_H && ratio >= MIN_RATIO && ratio <= MAX_RATIO;
+	}
+
+	/** Cached size of the wall whose bottom-left block is `origin`, re-measured twice a second; null if it isn't a clean rectangle. */
+	static int[] wall(Level level, BlockPos origin, Direction facing) {
+		long now = level.getGameTime();
+		long[] cached = measured.get(origin.asLong());
+		if (cached == null || now - cached[2] >= REMEASURE_TICKS || now < cached[2] || cached[3] != facing.ordinal()) {
+			int[] size = measure(level, origin, facing);
+			cached = new long[] {size == null ? 0 : size[0], size == null ? 0 : size[1], now, facing.ordinal()};
+			if (measured.size() > 256) measured.clear();
+			measured.put(origin.asLong(), cached);
+		}
+		return cached[0] == 0 ? null : new int[] {(int) cached[0], (int) cached[1]};
+	}
+
+	static boolean valid(int w, int h) {
+		double ratio = w / (double) h;
+		return w >= 2 && w <= MAX_W && h <= MAX_H && ratio >= MIN_RATIO && ratio <= MAX_RATIO;
+	}
+
+	static int canvasWidth(int w, int h) {
+		return Math.max(1, Math.round(CANVAS_H * w / (float) h));
+	}
+
+	/** The UI laid out for a canvas of this width. */
+	static ClaudeScreen view(int canvasW) {
+		return views.computeIfAbsent(canvasW, width -> {
+			ClaudeScreen view = new ClaudeScreen(true);
+			view.init(width, CANVAS_H);
+			return view;
+		});
 	}
 
 	/** Width and height when `pos` is the bottom-left (as seen from the front) of a clean rectangle of screens, else null. */
@@ -103,24 +134,31 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 	@Override
 	public void submit(State state, PoseStack pose, SubmitNodeCollector out, CameraRenderState camera) {
 		if (state.w == 0) return;
-		int canvasW = Math.max(1, Math.round(CANVAS_H * state.w / (float) state.h));
+		int canvasW = canvasWidth(state.w, state.h);
 		if (!state.valid) {
 			hint(state, pose, out, canvasW);
 			return;
 		}
-		if (view == null || viewW != canvasW || viewH != CANVAS_H) {
-			view = new ClaudeScreen(true);
-			view.init(canvasW, CANVAS_H);
-			viewW = canvasW;
-			viewH = CANVAS_H;
-		}
+		boolean aimed = !Double.isNaN(state.pointerX);
 		pose.pushPose();
 		// Block center, turned so +X is the viewer's right and +Z points out of the screen; then the wall's top-left.
 		place(state, pose, canvasW);
 		WorldCanvas canvas = new WorldCanvas(pose, out, font, LightTexture.FULL_BRIGHT, canvasW);
 		canvas.fill(0, 0, canvasW, CANVAS_H, 0xFF0C0F14);
-		view.paint(canvas, -10000, -10000);
+		view(canvasW).paint(canvas, aimed ? (int) state.pointerX : -10000, aimed ? (int) state.pointerY : -10000);
+		if (aimed) pointer(canvas, (int) state.pointerX, (int) state.pointerY);
 		pose.popPose();
+	}
+
+	/** A pixel-art mouse arrow at (x, y): black outline, white fill. */
+	private static void pointer(Canvas g, int x, int y) {
+		String[] rows = {"X", "XX", "XWX", "XWWX", "XWWWX", "XWWWWX", "XWWWWWX", "XWWWWWWX", "XWWWWXXXX", "XWXWWX", "XX XWWX", "X  XWWX", "    XX"};
+		for (int r = 0; r < rows.length; r++) {
+			for (int c = 0; c < rows[r].length(); c++) {
+				char ch = rows[r].charAt(c);
+				if (ch != ' ') g.fill(x + c, y + r, x + c + 1, y + r + 1, ch == 'X' ? 0xFF000000 : 0xFFFFFFFF);
+			}
+		}
 	}
 
 	/** A clean rectangle with the wrong size or shape: say what it is and what would work. */

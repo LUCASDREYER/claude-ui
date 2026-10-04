@@ -28,7 +28,7 @@ import java.util.List;
  */
 final class WorldCanvas implements Canvas {
 	/** One layer, in blocks. */
-	private static final float LAYER_BLOCKS = 0.0015f;
+	private static final float LAYER_BLOCKS = 0.003f;
 
 	private final PoseStack pose;
 	private final SubmitNodeCollector out;
