@@ -769,8 +769,8 @@ function trackUsage(m) {
     stats.apiKeySource = m.apiKeySource;
   } else if (m.type === 'assistant' && !m.parent_tool_use_id && m.message?.usage) {
     const u = m.message.usage;
-    stats.ctxTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0)
-      + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0);
+    // Input-only, matching Claude Code's own context percentage.
+    stats.ctxTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
     if (m.message.model) stats.model = m.message.model;
   } else if (m.type === 'result') {
     if (typeof m.total_cost_usd === 'number') stats.cost = m.total_cost_usd;
