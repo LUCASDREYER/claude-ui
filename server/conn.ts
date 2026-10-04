@@ -15,6 +15,7 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { SessionStore } from './sessions.js';
+import { createWorktree, projects, pullRequests, recentSessions } from './workspace.js';
 
 export const ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
 const store = new SessionStore(path.join(ROOT, 'sessions.json'));
@@ -32,9 +33,13 @@ export type ClientMsg =
   | { type: 'prompt'; text: string }
   | { type: 'interrupt' }
   | { type: 'set_cwd'; cwd: string }
-  | { type: 'new_session' }
-  | { type: 'resume'; sessionId: string }
+  | { type: 'new_session'; cwd?: string; worktree?: boolean }
+  | { type: 'resume'; sessionId: string; cwd?: string }
   | { type: 'set_mode'; mode: PermissionMode }
+  | { type: 'set_model'; model: string }
+  | { type: 'home' }
+  | { type: 'prs' }
+  | { type: 'models' }
   | ({ type: 'permission_response'; id: string } & PermissionReply);
 
 type PermissionReply = { allow: boolean; answers?: Record<string, string>; mode?: PermissionMode };
@@ -79,6 +84,14 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+// Fallback until a live query reports its own list; then that list is reused.
+let knownModels: { value: string; displayName: string; description: string }[] = [
+  { value: 'default', displayName: 'Default', description: 'Your Claude Code default' },
+  { value: 'opus', displayName: 'Opus', description: 'Most capable for complex work' },
+  { value: 'sonnet', displayName: 'Sonnet', description: 'Fast and capable for everyday work' },
+  { value: 'haiku', displayName: 'Haiku', description: 'Fastest for quick tasks' },
+];
+
 /** One client (a browser tab or a Minecraft world): owns at most one live query. */
 export class Conn {
   private q: Query | null = null;
@@ -88,6 +101,7 @@ export class Conn {
   private sessionId: string | null = null;
   private title = '';
   private mode: PermissionMode = 'default';
+  private model: string | undefined;
   private pending = new Map<string, (reply: PermissionReply) => void>();
 
   constructor(
@@ -124,9 +138,17 @@ export class Conn {
       case 'set_cwd':
         return void this.setCwd(String(msg.cwd ?? ''));
       case 'new_session':
-        return this.newSession();
+        return void this.newSession(msg.cwd, Boolean(msg.worktree));
       case 'resume':
-        return void this.resume(String(msg.sessionId ?? '').trim());
+        return void this.resume(String(msg.sessionId ?? '').trim(), msg.cwd);
+      case 'set_model':
+        return void this.setModel(String(msg.model ?? ''));
+      case 'home':
+        return void this.sendHome();
+      case 'prs':
+        return void this.sendPrs();
+      case 'models':
+        return void this.sendModels();
       case 'set_mode':
         return void this.setMode(msg.mode);
       case 'permission_response':
@@ -142,14 +164,51 @@ export class Conn {
 
   private async setCwd(input: string) {
     if (this.busy()) return;
+    if (await this.switchDir(input)) this.sendCwd();
+  }
+
+  /** Points this connection at another directory (no session yet). Returns false if it isn't one. */
+  private async switchDir(input: string) {
     const dir = path.resolve(input.trim().replace(/^~(?=$|\/)/, os.homedir()));
     const stat = await fs.stat(dir).catch(() => null);
-    if (!stat?.isDirectory()) return this.sendError(`Not a directory: ${dir}`);
+    if (!stat?.isDirectory()) {
+      this.sendError(`Not a directory: ${dir}`);
+      return false;
+    }
     this.stop();
     this.cwd = dir;
     this.sessionId = null;
     store.touchDir(dir);
-    this.sendCwd();
+    return true;
+  }
+
+  private async sendHome() {
+    try {
+      const [sessions, projectList] = await Promise.all([recentSessions(), projects(store.recentDirs())]);
+      this.send({ type: 'home', sessions, projects: projectList });
+    } catch (err) {
+      this.sendError(err);
+    }
+  }
+
+  private async sendPrs() {
+    try {
+      this.send({ type: 'prs', prs: await pullRequests() });
+    } catch (err) {
+      this.send({ type: 'prs', prs: [], error: `Couldn't load pull requests (${err instanceof Error ? err.message.split('\n')[0] : err}). Is gh installed and logged in?` });
+    }
+  }
+
+  private async sendModels() {
+    const models = (await this.q?.supportedModels().catch(() => null)) ?? knownModels;
+    knownModels = models;
+    this.send({ type: 'models', models, current: this.model ?? 'default' });
+  }
+
+  private async setModel(model: string) {
+    this.model = model && model !== 'default' ? model : undefined;
+    this.send({ type: 'model', model: this.model ?? 'default' });
+    await this.q?.setModel(this.model).catch((err) => this.sendError(err));
   }
 
   private sendCwd() {
@@ -215,15 +274,28 @@ export class Conn {
     });
   }
 
-  private newSession() {
+  private async newSession(cwd?: string, worktree = false) {
     if (this.busy()) return;
+    if (cwd && !(await this.switchDir(cwd))) return;
+    if (worktree) {
+      try {
+        if (!(await this.switchDir(await createWorktree(this.cwd)))) return;
+      } catch (err) {
+        return this.sendError(err);
+      }
+    }
     this.stop();
     this.sessionId = null;
+    if (cwd || worktree) this.sendCwd();
     this.send({ type: 'session', sessionId: null, sessions: store.list(this.cwd) });
   }
 
-  private async resume(id: string) {
+  private async resume(id: string, cwd?: string) {
     if (this.busy()) return;
+    if (cwd && cwd !== this.cwd) {
+      if (!(await this.switchDir(cwd))) return;
+      this.sendCwd();
+    }
     if (!/^[\w-]{8,64}$/.test(id)) return this.sendError('Invalid session ID.');
     const messages = await getSessionMessages(id, { dir: this.cwd }).catch(() => []);
     if (!messages.length) return this.sendError(`No session ${id} found for ${this.cwd}`);
@@ -255,6 +327,7 @@ export class Conn {
         systemPrompt: { type: 'preset', preset: 'claude_code', append: this.opts.systemPromptAppend },
         includePartialMessages: true,
         permissionMode: this.mode,
+        model: this.model,
         canUseTool: (toolName, input, opts) => this.askPermission(toolName, input, opts),
         stderr: (data) => process.stderr.write(data),
       },
