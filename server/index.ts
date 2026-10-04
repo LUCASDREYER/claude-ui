@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -363,13 +364,24 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
+/** Opens the UI as a chromeless app window (no tabs or address bar) when a Chromium browser is installed. */
+function openWindow(url: string) {
+  if (process.platform === 'darwin') {
+    const dirs = ['/Applications', path.join(os.homedir(), 'Applications')];
+    const app = ['Google Chrome', 'Microsoft Edge', 'Brave Browser', 'Chromium']
+      .find((name) => dirs.some((d) => existsSync(path.join(d, `${name}.app`))));
+    if (app) return execFile('open', ['-na', app, '--args', `--app=${url}`], () => {});
+    return execFile('open', [url], () => {});
+  }
+  if (process.platform === 'linux') {
+    execFile('google-chrome', [`--app=${url}`], (err) => err && execFile('xdg-open', [url], () => {}));
+  }
+}
+
 server.listen(PORT, HOST, () => {
   const url = `http://${HOST}:${PORT}`;
   console.log(`claude-ui on ${url}`);
-  if (!process.env.NO_OPEN) {
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'linux' ? 'xdg-open' : null;
-    if (opener) execFile(opener, [url], () => {});
-  }
+  if (!process.env.NO_OPEN) openWindow(url);
 });
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

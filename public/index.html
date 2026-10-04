@@ -47,14 +47,6 @@ button.danger { background: var(--err); border-color: var(--err); color: #fff; }
 button.ghost { background: none; border-color: transparent; color: var(--dim); }
 button.ghost:hover { color: var(--fg); border-color: var(--line); }
 
-/* top bar */
-#top {
-  display: flex; align-items: center; gap: 10px; padding: 4px 12px;
-  background: var(--bg-1); border-bottom: 1px solid var(--line); font-size: 12px;
-}
-#top .brand { font: 600 12px var(--mono); color: var(--accent); }
-#top .spacer { flex: 1; }
-#top #side-btn { padding: 0 4px; font-size: 14px; }
 #banner {
   padding: 5px 12px; font-size: 12.5px; display: flex; gap: 10px; align-items: center;
   background: var(--bg-2); border-bottom: 1px solid var(--line);
@@ -97,7 +89,7 @@ body.side-hidden #side { display: none; }
 #resume-form { margin-top: 10px; }
 @media (max-width: 760px) {
   #workspace { grid-template-columns: minmax(0, 1fr); }
-  #side { position: fixed; z-index: 5; top: 29px; bottom: 0; left: 0; width: 280px; box-shadow: 4px 0 12px rgb(0 0 0 / .3); }
+  #side { position: fixed; z-index: 5; top: 0; bottom: 22px; left: 0; width: 280px; box-shadow: 4px 0 12px rgb(0 0 0 / .3); }
 }
 
 /* transcript */
@@ -188,7 +180,7 @@ pre {
 
 /* status bar */
 #status {
-  display: flex; align-items: center; padding: 2px 12px; min-width: 0;
+  display: flex; align-items: center; gap: 10px; padding: 2px 8px; min-width: 0;
   font: 11.5px/1.6 var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden;
   background: var(--bg-1); border-top: 1px solid var(--line);
 }
@@ -196,6 +188,8 @@ pre {
 #status .grow { flex: 1; }
 #status .warn { color: var(--warn); }
 #status .err { color: var(--err); }
+#status-info { flex: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; }
+#status > button { color: var(--faint); padding: 0 2px; }
 #status .clip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 #status button { all: unset; cursor: pointer; }
 #status button:hover { color: var(--fg); text-decoration: underline; }
@@ -249,12 +243,6 @@ button.deny { color: var(--err); }
 </style>
 </head>
 <body>
-<header id="top">
-  <button id="side-btn" class="ghost" type="button" title="Toggle sidebar">&#9776;</button>
-  <span class="brand">claude-ui</span>
-  <span class="spacer"></span>
-  <button id="theme-btn" class="ghost" type="button" title="Toggle light/dark">theme</button>
-</header>
 <div id="banner" hidden></div>
 <div id="workspace">
   <aside id="side">
@@ -288,7 +276,11 @@ button.deny { color: var(--err); }
   </div>
 </div>
 
-<footer id="status"></footer>
+<footer id="status">
+  <button id="side-btn" type="button" title="Toggle sidebar">&#9776;</button>
+  <div id="status-info"></div>
+  <button id="theme-btn" type="button" title="Toggle light/dark">&#9680;</button>
+</footer>
 
 <script nonce="__NONCE__">
 'use strict';
@@ -754,7 +746,7 @@ function renderStatus() {
   if (stats.apiKeySource && stats.apiKeySource !== 'none') {
     seg(`billing: ${stats.apiKeySource}`, 'warn', 'Requests are authenticated with an API key, not your subscription');
   }
-  const bar = $('#status');
+  const bar = $('#status-info');
   bar.replaceChildren();
   parts.forEach((p, i) => {
     const prev = parts[i - 1];
