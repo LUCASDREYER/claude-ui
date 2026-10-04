@@ -23,13 +23,26 @@ final class AutoTest {
 	private static final String LIVE = System.getProperty("claudeui.live");
 	/** -Dclaudeui.tvtest=true: builds a Claude Screen wall in a fresh flat world and screenshots it. */
 	private static final boolean TV = Boolean.getBoolean("claudeui.tvtest");
+	/** -Dclaudeui.servertest=true with --quickPlayMultiplayer: logs whether the block is offered there, then quits. */
+	private static final boolean SERVER = Boolean.getBoolean("claudeui.servertest");
 	private static int tick, doneAt = -1, inWorld;
 	private static boolean sawRunning, approved;
 
 	static void tick(Minecraft mc) {
-		if ((!ON && LIVE == null && !TV) || mc.getOverlay() != null) return;
+		if ((!ON && LIVE == null && !TV && !SERVER) || mc.getOverlay() != null) return;
 		tick++;
 		Model m = ClaudeUIClient.CONNECTION.model;
+		if (SERVER) {
+			if (mc.player != null && ++inWorld == 60) {
+				net.minecraft.world.item.CreativeModeTabs.tryRebuildTabContents(mc.player.connection.enabledFeatures(), true, mc.level.registryAccess());
+				boolean listed = net.minecraft.core.registries.BuiltInRegistries.CREATIVE_MODE_TAB
+					.getValueOrThrow(net.minecraft.world.item.CreativeModeTabs.FUNCTIONAL_BLOCKS).getDisplayItems().stream()
+					.anyMatch(stack -> stack.is(ClaudeUIMod.SCREEN_ITEM));
+				System.out.println("[claudeui servertest] singleplayer=" + mc.hasSingleplayerServer() + " available=" + ClaudeUIMod.screenAvailable.getAsBoolean() + " inCreativeTab=" + listed);
+			}
+			if (inWorld == 80) mc.stop();
+			return;
+		}
 		if (TV) {
 			tv(mc, m);
 			return;
@@ -116,6 +129,13 @@ final class AutoTest {
 				}) server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), cmd);
 			});
 			mc.options.hideGui = true;
+		}
+		if (inWorld == 100) {
+			net.minecraft.world.item.CreativeModeTabs.tryRebuildTabContents(mc.player.connection.enabledFeatures(), true, mc.level.registryAccess());
+			boolean listed = net.minecraft.core.registries.BuiltInRegistries.CREATIVE_MODE_TAB
+				.getValueOrThrow(net.minecraft.world.item.CreativeModeTabs.FUNCTIONAL_BLOCKS).getDisplayItems().stream()
+				.anyMatch(stack -> stack.is(ClaudeUIMod.SCREEN_ITEM));
+			System.out.println("[claudeui servertest] singleplayer=" + mc.hasSingleplayerServer() + " available=" + ClaudeUIMod.screenAvailable.getAsBoolean() + " inCreativeTab=" + listed);
 		}
 		if (inWorld == 140) shot(mc, "tv-1-home");
 		if (inWorld == 145 && !m.recent.isEmpty()) {

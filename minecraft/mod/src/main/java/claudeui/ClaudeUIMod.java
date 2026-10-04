@@ -1,7 +1,10 @@
 package claudeui;
 
 import net.fabricmc.api.ModInitializer;
+import java.util.function.BooleanSupplier;
 import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
+import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.fabric.api.object.builder.v1.block.entity.FabricBlockEntityTypeBuilder;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -30,8 +33,18 @@ public final class ClaudeUIMod implements ModInitializer {
 	public static final BlockEntityType<ScreenBlockEntity> SCREEN_ENTITY = Registry.register(BuiltInRegistries.BLOCK_ENTITY_TYPE, SCREEN_ID,
 		FabricBlockEntityTypeBuilder.create(ScreenBlockEntity::new, SCREEN).build());
 
+	/**
+	 * Whether the server you're on knows the block. Servers without the mod (Paper, vanilla) kick a player who takes
+	 * an item they can't decode, so the client only offers it where it exists. Set by the client entry point.
+	 */
+	public static BooleanSupplier screenAvailable = () -> true;
+
 	@Override
 	public void onInitialize() {
-		ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.FUNCTIONAL_BLOCKS).register(entries -> entries.accept(SCREEN_ITEM));
+		PayloadTypeRegistry.playC2S().register(HelloPayload.TYPE, HelloPayload.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(HelloPayload.TYPE, (payload, context) -> {});
+		ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.FUNCTIONAL_BLOCKS).register(entries -> {
+			if (screenAvailable.getAsBoolean()) entries.accept(SCREEN_ITEM);
+		});
 	}
 }

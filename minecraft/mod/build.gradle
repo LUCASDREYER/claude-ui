@@ -22,6 +22,10 @@ loom {
 			if (project.hasProperty("port")) vmArg "-Dclaudeui.port=${project.property("port")}"
 			if (project.hasProperty("live")) vmArg "-Dclaudeui.live=${project.property("live")}"
 			if (project.hasProperty("tvtest")) vmArg "-Dclaudeui.tvtest=true"
+			if (project.hasProperty("servertest")) {
+				vmArg "-Dclaudeui.servertest=true"
+				programArgs "--quickPlayMultiplayer", project.property("servertest").toString()
+			}
 		}
 	}
 }
