@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "claude-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "env": { "NO_OPEN": "1" },
+      "port": 3456,
+      "url": "http://127.0.0.1:3456"
+    }
+  ]
+}
