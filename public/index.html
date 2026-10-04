@@ -186,6 +186,33 @@ pre {
 .ln-add { background: var(--add-bg); color: var(--ok); display: block; }
 .ln-del { background: var(--del-bg); color: var(--err); display: block; }
 
+/* permission prompts */
+.perm { border: 1px solid var(--warn); background: var(--bg-1); margin: 6px 0; border-radius: 3px; font-size: 13px; }
+.perm.settled { border-color: var(--line); opacity: .7; }
+.perm-h { display: flex; gap: 8px; align-items: baseline; padding: 5px 10px; }
+.perm-tag { font: 600 10.5px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--warn); }
+.perm.settled .perm-tag { color: var(--faint); }
+.perm-title { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.perm > pre {
+  margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none;
+  max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+.perm-plan { padding: 6px 12px; border-top: 1px solid var(--line); max-height: 55vh; overflow: auto; }
+.perm-why { padding: 4px 10px; font: 12px var(--mono); color: var(--dim); border-top: 1px solid var(--line); }
+.perm-actions, .perm-done { display: flex; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--line); }
+.perm-done { font: 12px var(--mono); color: var(--dim); }
+.q { padding: 6px 10px; border-top: 1px solid var(--line); }
+.q-text { font-weight: 600; margin-bottom: 6px; }
+.q-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.q-opts button { text-align: left; max-width: 280px; }
+.q-opts button span { display: block; color: var(--dim); font-size: 11px; }
+.q-opts button.picked { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.q-other {
+  width: 100%; font: 12.5px var(--sans); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px; outline: none;
+}
+button.deny { color: var(--err); }
+
 /* composer */
 #composer {
   border-top: 1px solid var(--line); background: var(--bg-1); padding: 8px 16px;
@@ -198,6 +225,13 @@ pre {
 }
 #input:focus { border-color: var(--dim); }
 #send { height: 34px; min-width: 76px; font-size: 13px; }
+#composer .sub { margin-top: 6px; justify-content: space-between; align-items: center; font-size: 11.5px; color: var(--faint); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: none; color: var(--dim); padding: 2px 10px; font-size: 11.5px; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--bg-2); color: var(--fg); }
+.seg button.on[data-mode="acceptEdits"] { color: var(--warn); }
+.seg button.on[data-mode="plan"] { color: var(--link); }
 </style>
 </head>
 <body>
@@ -228,6 +262,14 @@ pre {
       <div class="row">
         <textarea id="input" rows="1" placeholder="Message Claude  (Enter to send, Shift+Enter for newline)" autofocus></textarea>
         <button id="send" class="primary" type="submit">Send</button>
+      </div>
+      <div class="row sub">
+        <div id="modes" class="seg" title="Permission mode">
+          <button type="button" data-mode="default">ask</button>
+          <button type="button" data-mode="acceptEdits">accept edits</button>
+          <button type="button" data-mode="plan">plan</button>
+        </div>
+        <span>Esc stops the run</span>
       </div>
     </form>
   </div>
@@ -396,18 +438,19 @@ function diffLines(oldStr, newStr) {
   return frag;
 }
 
+function inputView(name, input) {
+  const frag = document.createDocumentFragment();
+  if (name === 'Bash' && input?.command) frag.append('$ ' + input.command);
+  else if (name === 'Edit' && input && 'old_string' in input) frag.append(input.file_path + '\n', diffLines(input.old_string, input.new_string));
+  else if (name === 'Write' && input && 'content' in input) frag.append(`${input.file_path}\n\n${input.content}`);
+  else frag.append(JSON.stringify(input, null, 2));
+  return frag;
+}
+
 function setCardInput(card, input) {
   card.input = input;
   card.desc.textContent = describe(input);
-  if (card.name === 'Bash' && input?.command) {
-    card.inp.textContent = '$ ' + input.command;
-  } else if (card.name === 'Edit' && input && 'old_string' in input) {
-    card.inp.replaceChildren(input.file_path + '\n', diffLines(input.old_string, input.new_string));
-  } else if (card.name === 'Write' && input && 'content' in input) {
-    card.inp.textContent = `${input.file_path}\n\n${input.content}`;
-  } else {
-    card.inp.textContent = JSON.stringify(input, null, 2);
-  }
+  card.inp.replaceChildren(inputView(card.name, input));
 }
 
 const OUTPUT_LIMIT = 30000;
@@ -534,6 +577,119 @@ function onSdk(m) {
   }
 }
 
+// ---------- permission prompts
+const pendingPerms = new Map(); // request id -> card element
+
+function button(label, cls, onClick) {
+  const b = h('button', cls, label);
+  b.type = 'button';
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function updateTitle() {
+  document.title = (pendingPerms.size ? '[approve] ' : app.running ? '\u2026 ' : '') + 'Claude UI';
+}
+
+function settlePermission(id, label) {
+  const el = pendingPerms.get(id);
+  if (!el) return;
+  pendingPerms.delete(id);
+  el.classList.add('settled');
+  el.querySelector('.perm-actions')?.replaceWith(h('div', 'perm-done', label));
+  el.querySelectorAll('.q button, .q input').forEach((x) => (x.disabled = true));
+  updateTitle();
+}
+
+function questionBlocks(questions, answers) {
+  return questions.map((q) => {
+    const box = h('div', 'q');
+    const opts = h('div', 'q-opts');
+    const other = h('input', 'q-other');
+    other.placeholder = 'Other\u2026';
+    const picked = new Set();
+    const sync = () => {
+      for (const b of opts.children) b.classList.toggle('picked', picked.has(b.dataset.label));
+      answers[q.question] = [...picked].join(', ');
+    };
+    for (const o of q.options || []) {
+      const b = button('', '', () => {
+        if (!q.multiSelect) picked.clear();
+        if (picked.has(o.label)) picked.delete(o.label); else picked.add(o.label);
+        other.value = '';
+        sync();
+      });
+      b.dataset.label = o.label;
+      b.append(h('b', null, o.label), h('span', null, o.description || ''));
+      opts.append(b);
+    }
+    other.addEventListener('input', () => {
+      picked.clear();
+      sync();
+      answers[q.question] = other.value.trim();
+    });
+    box.append(h('div', 'q-text', q.question), opts, other);
+    return box;
+  });
+}
+
+function permissionCard(req) {
+  const el = h('div', 'perm');
+  const head = h('div', 'perm-h');
+  head.append(h('span', 'perm-tag', req.toolName === 'AskUserQuestion' ? 'question' : 'permission'), h('b', null, req.toolName));
+  if (req.title) head.append(h('span', 'perm-title', req.title));
+  el.append(head);
+
+  const reply = (msg, label) => {
+    send({ type: 'permission_response', id: req.id, ...msg });
+    settlePermission(req.id, label);
+  };
+  const actions = h('div', 'perm-actions');
+
+  if (req.toolName === 'AskUserQuestion' && Array.isArray(req.input?.questions)) {
+    const answers = {};
+    el.append(...questionBlocks(req.input.questions, answers));
+    actions.append(
+      button('Submit', 'primary', () => reply({ allow: true, answers }, 'answered: ' + Object.values(answers).filter(Boolean).join(' / '))),
+      button('Skip', 'deny', () => reply({ allow: false }, 'skipped')),
+    );
+  } else if (req.toolName === 'ExitPlanMode' && typeof req.input?.plan === 'string') {
+    const plan = h('div', 'md perm-plan');
+    plan.append(mdFragment(req.input.plan));
+    decorateCode(plan);
+    el.append(plan);
+    actions.append(
+      button('Approve, ask before edits', 'primary', () => reply({ allow: true, mode: 'default' }, 'plan approved')),
+      button('Approve, accept edits', '', () => reply({ allow: true, mode: 'acceptEdits' }, 'plan approved, accepting edits')),
+      button('Keep planning', 'deny', () => reply({ allow: false }, 'kept planning')),
+    );
+  } else {
+    const pre = h('pre');
+    pre.append(inputView(req.toolName, req.input));
+    el.append(pre);
+    const why = req.blockedPath ? `blocked path: ${req.blockedPath}` : req.decisionReason;
+    if (why) el.append(h('div', 'perm-why', why));
+    actions.append(
+      button('Allow', 'primary', () => reply({ allow: true }, 'allowed')),
+      button('Deny', 'deny', () => reply({ allow: false }, 'denied')),
+    );
+  }
+  el.append(actions);
+  log.append(el);
+  pendingPerms.set(req.id, el);
+  updateTitle();
+  stick = true;
+  follow();
+}
+
+// ---------- permission mode
+function showMode(mode) {
+  for (const b of document.querySelectorAll('#modes button')) b.classList.toggle('on', b.dataset.mode === mode);
+}
+for (const b of document.querySelectorAll('#modes button')) {
+  b.addEventListener('click', () => send({ type: 'set_mode', mode: b.dataset.mode }));
+}
+
 // ---------- transcript reset + history replay
 function clearTranscript() {
   log.replaceChildren();
@@ -638,6 +794,8 @@ function send(msg) {
 
 function setRunning(running) {
   app.running = running;
+  if (!running) for (const id of [...pendingPerms.keys()]) settlePermission(id, 'cancelled');
+  updateTitle();
   sendBtn.textContent = running ? 'Stop' : 'Send';
   sendBtn.className = running ? 'danger' : 'primary';
 }
@@ -667,6 +825,9 @@ function connect() {
         renderSidebar();
         break;
       case 'history': renderHistory(msg.messages); break;
+      case 'mode': showMode(msg.mode); break;
+      case 'permission_request': permissionCard(msg); break;
+      case 'permission_cancel': settlePermission(msg.id, 'cancelled'); break;
       case 'sdk': onSdk(msg.msg); break;
       case 'running': setRunning(msg.running); break;
       case 'error': notice(msg.message, 'err'); break;

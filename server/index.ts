@@ -10,6 +10,9 @@ import {
   getSessionInfo,
   getSessionMessages,
   query,
+  type CanUseTool,
+  type PermissionMode,
+  type PermissionResult,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
@@ -37,7 +40,14 @@ type ClientMsg =
   | { type: 'interrupt' }
   | { type: 'set_cwd'; cwd: string }
   | { type: 'new_session' }
-  | { type: 'resume'; sessionId: string };
+  | { type: 'resume'; sessionId: string }
+  | { type: 'set_mode'; mode: PermissionMode }
+  | ({ type: 'permission_response'; id: string } & PermissionReply);
+
+type PermissionReply = { allow: boolean; answers?: Record<string, string>; mode?: PermissionMode };
+
+// bypassPermissions is deliberately not offered.
+const MODES = new Set<PermissionMode>(['default', 'acceptEdits', 'plan']);
 
 /** User turns for a streaming-input query. Stays open between turns so the CLI process is reused. */
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -77,12 +87,15 @@ class Conn {
   private cwd = store.recentDirs()[0] ?? process.cwd();
   private sessionId: string | null = null;
   private title = '';
+  private mode: PermissionMode = 'default';
+  private pending = new Map<string, (reply: PermissionReply) => void>();
 
   constructor(private ws: WebSocket) {
     ws.on('message', (data) => this.onClientMessage(data.toString()));
     ws.on('close', () => this.stop());
     this.send({ type: 'hello', home: os.homedir(), apiKeyPresent });
     this.sendCwd();
+    this.send({ type: 'mode', mode: this.mode });
   }
 
   send(msg: unknown) {
@@ -90,6 +103,7 @@ class Conn {
   }
 
   stop() {
+    for (const reply of [...this.pending.values()]) reply({ allow: false });
     this.input?.close();
     this.q?.close();
     this.q = null;
@@ -116,6 +130,11 @@ class Conn {
         return this.newSession();
       case 'resume':
         return void this.resume(String(msg.sessionId ?? '').trim());
+      case 'set_mode':
+        return void this.setMode(msg.mode);
+      case 'permission_response':
+        this.pending.get(String(msg.id))?.(msg);
+        return;
     }
   }
 
@@ -143,6 +162,59 @@ class Conn {
       recentDirs: store.recentDirs(),
       sessions: store.list(this.cwd),
       sessionId: this.sessionId,
+    });
+  }
+
+  private async setMode(mode: PermissionMode) {
+    if (!MODES.has(mode)) return;
+    this.mode = mode;
+    this.send({ type: 'mode', mode });
+    await this.q?.setPermissionMode(mode).catch((err) => this.sendError(err));
+  }
+
+  /** Forwards a tool-permission prompt to the browser and waits for Allow / Deny. */
+  private askPermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    opts: Parameters<CanUseTool>[2],
+  ): Promise<PermissionResult> {
+    const deny = (message: string): PermissionResult => ({ behavior: 'deny', message });
+    if (opts.signal.aborted) return Promise.resolve(deny('Cancelled.'));
+    const id = crypto.randomUUID();
+    return new Promise((resolve) => {
+      const finish = (result: PermissionResult) => {
+        this.pending.delete(id);
+        opts.signal.removeEventListener('abort', onAbort);
+        resolve(result);
+      };
+      const onAbort = () => {
+        this.send({ type: 'permission_cancel', id });
+        finish(deny('Cancelled.'));
+      };
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+
+      this.pending.set(id, (reply) => {
+        if (!reply.allow) return finish(deny('The user denied this request.'));
+        // AskUserQuestion takes the user's choices as `answers` on its input.
+        const updatedInput = reply.answers ? { ...input, answers: reply.answers } : input;
+        // Approving a plan leaves plan mode for the mode the user picked.
+        const next = toolName === 'ExitPlanMode' && reply.mode && MODES.has(reply.mode) ? reply.mode : null;
+        if (!next) return finish({ behavior: 'allow', updatedInput });
+        this.mode = next;
+        this.send({ type: 'mode', mode: next });
+        finish({ behavior: 'allow', updatedInput, updatedPermissions: [{ type: 'setMode', mode: next, destination: 'session' }] });
+      });
+
+      this.send({
+        type: 'permission_request',
+        id,
+        toolName,
+        input,
+        title: opts.title,
+        decisionReason: opts.decisionReason,
+        blockedPath: opts.blockedPath,
+        toolUseID: opts.toolUseID,
+      });
     });
   }
 
@@ -185,8 +257,8 @@ class Conn {
         resume: this.sessionId ?? undefined,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         includePartialMessages: true,
-        // No approval UI yet: anything that would prompt is denied.
-        permissionPrompts: 'none',
+        permissionMode: this.mode,
+        canUseTool: (toolName, input, opts) => this.askPermission(toolName, input, opts),
         stderr: (data) => process.stderr.write(data),
       },
     });
@@ -215,6 +287,12 @@ class Conn {
       store.upsert(this.cwd, sid, { title: this.title, replaces: this.sessionId });
       this.sessionId = sid;
       this.send({ type: 'session', sessionId: sid, sessions: store.list(this.cwd) });
+    }
+    if (m.type === 'system' && (m.subtype === 'init' || m.subtype === 'status')) {
+      if (m.permissionMode && m.permissionMode !== this.mode) {
+        this.mode = m.permissionMode;
+        this.send({ type: 'mode', mode: m.permissionMode });
+      }
     }
     if (m.type === 'result') {
       this.setRunning(false);
