@@ -4,7 +4,7 @@
  * buttons come back as chat. Input is read from the server console; output goes in as console
  * commands (tellraw), so no bot client or extra packages are needed.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -37,7 +37,7 @@ enable-query=false
 
 // Console feedback from our own commands; kept out of the terminal.
 const NOISE =
-  /^(No player was found|No entity was found|Modified entity data of|Summoned new|Teleported |Killed |Enabled trigger|Nothing changed|Created new objective|An objective already exists|Showing new (title|actionbar)|\w+ issued server command: \/trigger claude)/;
+  /^(\[ClaudeUI\] (click|dialog) |Displayed dialog|No player was found|No entity was found|Modified entity data of|Summoned new|Teleported |Killed |Enabled trigger|Nothing changed|Created new objective|An objective already exists|Showing new (title|actionbar)|\w+ issued server command: \/trigger claude)/;
 
 // ---------- setup
 
@@ -54,6 +54,32 @@ async function setup() {
   }
   const props = path.join(DIR, 'server.properties');
   if (!fs.existsSync(props)) fs.writeFileSync(props, PROPERTIES);
+  buildPlugin();
+}
+
+/** Compiles minecraft/plugin into plugins/ClaudeUI.jar against the server's own jars, when the source changed. */
+function buildPlugin() {
+  const src = path.join(ROOT, 'minecraft/plugin');
+  const jar = path.join(DIR, 'plugins/ClaudeUI.jar');
+  const files = (fs.readdirSync(src, { recursive: true }) as string[]).map((f) => path.join(src, f)).filter((f) => fs.statSync(f).isFile());
+  const newest = Math.max(...files.map((f) => fs.statSync(f).mtimeMs));
+  if (fs.existsSync(jar) && fs.statSync(jar).mtimeMs > newest) return;
+
+  // A fresh install has no libraries yet; Paper can unpack them without starting.
+  if (!fs.existsSync(path.join(DIR, 'libraries'))) {
+    execFileSync('java', ['-Dpaperclip.patchonly=true', '-jar', 'paper.jar'], { cwd: DIR, stdio: 'inherit' });
+  }
+  const jars = (dir: string) =>
+    (fs.readdirSync(path.join(DIR, dir), { recursive: true }) as string[]).filter((f) => f.endsWith('.jar')).map((f) => path.join(DIR, dir, f));
+  const out = path.join(DIR, '.plugin-build');
+  fs.rmSync(out, { recursive: true, force: true });
+  console.log('Building the ClaudeUI plugin…');
+  const sources = files.filter((f) => f.endsWith('.java'));
+  const classpath = [...jars('libraries'), ...jars('versions')].join(path.delimiter);
+  execFileSync('javac', ['--release', '21', '-proc:none', '-nowarn', '-cp', classpath, '-d', out, ...sources], { stdio: 'inherit' });
+  fs.copyFileSync(path.join(src, 'plugin.yml'), path.join(out, 'plugin.yml'));
+  fs.mkdirSync(path.dirname(jar), { recursive: true });
+  execFileSync('jar', ['--create', '--file', jar, '-C', out, '.'], { stdio: 'inherit' });
 }
 
 async function downloadPaper(dest: string) {
@@ -93,6 +119,10 @@ readline.createInterface({ input: java.stdout }).on('line', (raw) => {
   let x: RegExpMatchArray | null;
   if ((x = msg.match(/^(?:\[Not Secure\] )?<(\w{1,16})> (.*)$/))) return bridge.onChat(x[1]!, x[2]!);
   if ((x = msg.match(/^(\w{1,16}) issued server command: \/trigger claude set (\d+)$/))) return bridge.onTrigger(x[1]!, Number(x[2]));
+  if ((x = msg.match(/^\[ClaudeUI\] click (\w{1,16}) (\w+) ([\w:]+)$/))) return bridge.onMenuClick(x[1]!, x[2]!, x[3]!);
+  if ((x = msg.match(/^\[ClaudeUI\] dialog (\w{1,16}) ([\w/]+) ([A-Za-z0-9+/=]*)$/))) {
+    return bridge.onDialog(x[1]!, x[2]!, JSON.parse(Buffer.from(x[3]!, 'base64').toString('utf8') || '{}'));
+  }
   if ((x = msg.match(/^(\w{1,16}) joined the game$/)) && NAME.test(x[1]!)) return bridge.onJoin(x[1]!);
   if (msg.startsWith('Done (')) {
     command('scoreboard objectives add claude trigger');

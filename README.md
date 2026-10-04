@@ -8,4 +8,4 @@ Local web UI for Claude Code (Agent SDK) plus a terminal status line. Uses your 
 4. Status line: add to `~/.claude/settings.json` →
    `"statusLine": { "type": "command", "command": "python3 \"/path/to/claude-ui/statusline/statusline.py\"" }`
 5. macOS app: `npm run app` builds `Claude UI.app` into `~/Applications` (needs Xcode). It runs the server itself; quitting stops it.
-6. Minecraft: `npm run minecraft` starts a local Paper 1.21.11 server (127.0.0.1 only). Join with Minecraft 1.21.11 → Direct Connection → `127.0.0.1`, then chat `claude <request>` (`claude help` for commands).
+6. Minecraft: `npm run minecraft` starts a local Paper 1.21.11 server (127.0.0.1 only). Join with Minecraft 1.21.11 → Direct Connection → `127.0.0.1`, then chat `claude <request>`. `claude panel` opens a Claude window, `claude menu` a controls menu, `claude help` lists the rest.

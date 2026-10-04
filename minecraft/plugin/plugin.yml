@@ -1,0 +1,12 @@
+name: ClaudeUI
+version: 0.1.0
+main: claudeui.ClaudeUI
+api-version: '1.21.11'
+description: Item menus and dialog input for the claude-ui bridge
+commands:
+  claudeui:
+    description: Internal; driven by the claude-ui bridge from the server console
+    permission: claudeui.console
+permissions:
+  claudeui.console:
+    default: op
