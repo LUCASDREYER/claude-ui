@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "claudeui",
+	"version": "${version}",
+	"name": "Claude UI",
+	"description": "Claude Code inside Minecraft: talks to the claude-ui server running on this computer.",
+	"authors": ["LUCASDREYER"],
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["claudeui.ClaudeUIClient"]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

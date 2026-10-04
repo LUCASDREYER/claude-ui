@@ -3,3 +3,6 @@ dist/
 sessions.json
 .DS_Store
 minecraft/server/
+minecraft/mod/.gradle/
+minecraft/mod/build/
+minecraft/mod/run/

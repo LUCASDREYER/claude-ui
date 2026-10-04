@@ -37,9 +37,10 @@ export type ClientMsg =
   | { type: 'resume'; sessionId: string; cwd?: string }
   | { type: 'set_mode'; mode: PermissionMode }
   | { type: 'set_model'; model: string }
-  | { type: 'home' }
+  | { type: 'home'; limit?: number }
   | { type: 'prs' }
   | { type: 'models' }
+  | { type: 'ls'; path?: string }
   | ({ type: 'permission_response'; id: string } & PermissionReply);
 
 type PermissionReply = { allow: boolean; answers?: Record<string, string>; mode?: PermissionMode };
@@ -144,11 +145,13 @@ export class Conn {
       case 'set_model':
         return void this.setModel(String(msg.model ?? ''));
       case 'home':
-        return void this.sendHome();
+        return void this.sendHome(Math.min(Number(msg.limit) || 12, 60));
       case 'prs':
         return void this.sendPrs();
       case 'models':
         return void this.sendModels();
+      case 'ls':
+        return void this.listDir(String(msg.path ?? ''));
       case 'set_mode':
         return void this.setMode(msg.mode);
       case 'permission_response':
@@ -182,9 +185,9 @@ export class Conn {
     return true;
   }
 
-  private async sendHome() {
+  private async sendHome(limit: number) {
     try {
-      const [sessions, projectList] = await Promise.all([recentSessions(), projects(store.recentDirs())]);
+      const [sessions, projectList] = await Promise.all([recentSessions(limit), projects(store.recentDirs())]);
       this.send({ type: 'home', sessions, projects: projectList });
     } catch (err) {
       this.sendError(err);
@@ -203,6 +206,22 @@ export class Conn {
     const models = (await this.q?.supportedModels().catch(() => null)) ?? knownModels;
     knownModels = models;
     this.send({ type: 'models', models, current: this.model ?? 'default' });
+  }
+
+  /** Lists a folder inside the project, for attaching files as @path mentions. */
+  private async listDir(rel: string) {
+    const dir = path.resolve(this.cwd, rel);
+    if (dir !== this.cwd && !dir.startsWith(this.cwd + path.sep)) return this.sendError('That folder is outside the project.');
+    try {
+      const entries = (await fs.readdir(dir, { withFileTypes: true }))
+        .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules')
+        .map((e) => ({ name: e.name, dir: e.isDirectory() }))
+        .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
+        .slice(0, 300);
+      this.send({ type: 'ls', path: path.relative(this.cwd, dir), entries });
+    } catch (err) {
+      this.sendError(err);
+    }
   }
 
   private async setModel(model: string) {
