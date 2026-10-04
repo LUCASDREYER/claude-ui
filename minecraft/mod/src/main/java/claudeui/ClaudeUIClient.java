@@ -6,10 +6,11 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderers;
 import net.minecraft.resources.Identifier;
 import org.lwjgl.glfw.GLFW;
 
-/** Entry point: K (rebindable under Controls) opens the Claude Code screen in any world. */
+/** Client entry point: K (rebindable under Controls) opens the Claude Code screen; Claude Screen walls draw it in the world. */
 public final class ClaudeUIClient implements ClientModInitializer {
 	public static final Connection CONNECTION = new Connection();
 	private static KeyMapping openKey;
@@ -17,6 +18,8 @@ public final class ClaudeUIClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		KeyMapping.Category category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("claudeui", "main"));
+		BlockEntityRenderers.register(ClaudeUIMod.SCREEN_ENTITY, ScreenRenderer::new);
+		ScreenBlock.openUi = () -> open(Minecraft.getInstance());
 		openKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.claudeui.open", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_K, category));
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (openKey.consumeClick()) open(client);

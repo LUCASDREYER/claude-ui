@@ -1,0 +1,8 @@
+{
+	"parent": "minecraft:block/orientable",
+	"textures": {
+		"top": "claudeui:block/screen_side",
+		"side": "claudeui:block/screen_side",
+		"front": "claudeui:block/screen_front"
+	}
+}

@@ -21,6 +21,7 @@ loom {
 			if (project.hasProperty("autotest")) vmArg "-Dclaudeui.autotest=true"
 			if (project.hasProperty("port")) vmArg "-Dclaudeui.port=${project.property("port")}"
 			if (project.hasProperty("live")) vmArg "-Dclaudeui.live=${project.property("live")}"
+			if (project.hasProperty("tvtest")) vmArg "-Dclaudeui.tvtest=true"
 		}
 	}
 }

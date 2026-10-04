@@ -3,11 +3,12 @@
 	"id": "claudeui",
 	"version": "${version}",
 	"name": "Claude UI",
-	"description": "Claude Code inside Minecraft: talks to the claude-ui server running on this computer.",
+	"description": "Claude Code inside Minecraft: press K, or build a Claude Screen wall. Talks to the claude-ui server running on this computer.",
 	"authors": ["LUCASDREYER"],
 	"license": "MIT",
-	"environment": "client",
+	"environment": "*",
 	"entrypoints": {
+		"main": ["claudeui.ClaudeUIMod"],
 		"client": ["claudeui.ClaudeUIClient"]
 	},
 	"depends": {

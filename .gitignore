@@ -6,3 +6,4 @@ minecraft/server/
 minecraft/mod/.gradle/
 minecraft/mod/build/
 minecraft/mod/run/
+minecraft/*.log

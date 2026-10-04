@@ -11,7 +11,6 @@ import net.minecraft.util.Util;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.components.PlayerFaceRenderer;
 import net.minecraft.client.gui.screens.ConfirmLinkScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
@@ -76,8 +75,16 @@ public final class ClaudeScreen extends Screen {
 		}
 	}
 
+	/** True for the copy drawn on Claude Screen walls: no clicks, sounds or focus. */
+	private final boolean offscreen;
+
 	public ClaudeScreen() {
+		this(false);
+	}
+
+	ClaudeScreen(boolean offscreen) {
 		super(Component.literal("Claude Code"));
+		this.offscreen = offscreen;
 	}
 
 	/** Opens the file picker (also used by the self-test). */
@@ -96,7 +103,7 @@ public final class ClaudeScreen extends Screen {
 
 	@Override
 	protected void init() {
-		current = this;
+		if (!offscreen) current = this;
 		int tabH = 24;
 		pw = Mth.clamp(width - 20, 300, 620);
 		ph = Mth.clamp(height - tabH - 12, 170, 380);
@@ -123,7 +130,7 @@ public final class ClaudeScreen extends Screen {
 		input.setValue(draft);
 		input.setResponder(s -> draft = s);
 		addRenderableWidget(input);
-		setInitialFocus(input);
+		if (!offscreen) setInitialFocus(input);
 		ClaudeUIClient.CONNECTION.connectIfNeeded();
 		requested.clear();
 		load();
@@ -197,7 +204,22 @@ public final class ClaudeScreen extends Screen {
 	// ---------- render
 
 	@Override
-	public void render(GuiGraphics g, int mx, int my, float delta) {
+	public void render(GuiGraphics gui, int mx, int my, float delta) {
+		paint(new Canvas.Gui(gui, font), mx, my);
+		super.render(gui, mx, my, delta);
+		for (int i = hits.size() - 1; i >= 0; i--) {
+			Hit hit = hits.get(i);
+			if (hit.tooltip() != null && !hit.tooltip().isEmpty() && hit.contains(mx, my)) {
+				List<FormattedCharSequence> lines = new ArrayList<>();
+				for (Component c : hit.tooltip()) lines.addAll(font.split(c, 260));
+				gui.setTooltipForNextFrame(font, lines, mx, my);
+				break;
+			}
+		}
+	}
+
+	/** Draws the whole UI; shared by this screen and by Claude Screen walls in the world (offscreen). */
+	void paint(Canvas g, int mx, int my) {
 		hits.clear();
 		if (m.pending.size() > seenPending) {
 			section = Section.SESSION; // Claude is waiting on you: show it
@@ -218,7 +240,7 @@ public final class ClaudeScreen extends Screen {
 		else scroll.put(section, offset);
 		if (chat && offset >= max - 1) followBottom = true;
 		int top = cy + 5 - (int) offset;
-		g.enableScissor(cx + 1, cy + 1, cx + cw - 1, cy + ch - 1);
+		g.clip(cx + 1, cy + 1, cx + cw - 1, cy + ch - 1);
 		int end;
 		if (!m.connected) end = offline(g, mx, my, top);
 		else if (attachOpen) end = attach(g, mx, my, top);
@@ -231,26 +253,15 @@ public final class ClaudeScreen extends Screen {
 			case SETTINGS -> settings(g, mx, my, top);
 		};
 		if (m.connected && !attachOpen && section == Section.SESSION) sessionStatus(g, mx, my);
-		g.disableScissor();
+		g.unclip();
 		contentHeight = end - top;
 		if (max > 0) scrollbar(g, offset, max);
 
 		promptBar(g);
 		buttons(g, mx, my);
-		super.render(g, mx, my, delta);
-
-		for (int i = hits.size() - 1; i >= 0; i--) {
-			Hit hit = hits.get(i);
-			if (hit.tooltip() != null && !hit.tooltip().isEmpty() && hit.contains(mx, my)) {
-				List<FormattedCharSequence> lines = new ArrayList<>();
-				for (Component c : hit.tooltip()) lines.addAll(font.split(c, 260));
-				g.setTooltipForNextFrame(font, lines, mx, my);
-				break;
-			}
-		}
 	}
 
-	private void tabs(GuiGraphics g, int mx, int my) {
+	private void tabs(Canvas g, int mx, int my) {
 		int tw = 26, gap = 2, total = TABS.length * (tw + gap) - gap;
 		int x = px + (pw - total) / 2;
 		for (Section s : TABS) {
@@ -269,23 +280,19 @@ public final class ClaudeScreen extends Screen {
 		}
 	}
 
-	private void header(GuiGraphics g) {
-		g.pose().pushMatrix();
-		g.pose().translate(px + 9, py + 7);
-		g.pose().scale(1.5f, 1.5f);
-		g.drawString(font, "Claude Code", 0, 0, LABEL, false);
-		g.pose().popMatrix();
+	private void header(Canvas g) {
+		g.scaledText("Claude Code", px + 9, py + 7, 1.5f, LABEL);
 
 		Minecraft mc = Minecraft.getInstance();
 		PlayerSkin skin = mc.player != null ? mc.player.getSkin() : DefaultPlayerSkin.get(mc.getUser().getProfileId());
 		int fx = px + pw - 9 - 16, fy = py + 5;
 		g.fill(fx - 1, fy - 1, fx + 17, fy + 17, BLACK);
-		PlayerFaceRenderer.draw(g, skin, fx, fy, 16);
+		g.face(skin, fx, fy, 16);
 		String welcome = "Welcome back, " + mc.getUser().getName();
-		g.drawString(font, welcome, fx - 6 - font.width(welcome), py + 9, LABEL, false);
+		g.text(welcome, fx - 6 - font.width(welcome), py + 9, LABEL);
 	}
 
-	private void sidebar(GuiGraphics g, int mx, int my) {
+	private void sidebar(Canvas g, int mx, int my) {
 		pane(g, sx, sy, sw, sh);
 		Object[][] items = {
 			{Section.HOME, "Home"},
@@ -310,9 +317,9 @@ public final class ClaudeScreen extends Screen {
 				g.fill(x, y, x + w, y + rowH, CARD_HOVER);
 			}
 			int iconY = y + (rowH - 12) / 2;
-			if (s == null) g.drawString(font, ">_", x + 4, y + (rowH - 8) / 2, TEXT, false);
+			if (s == null) g.text(">_", x + 4, y + (rowH - 8) / 2, TEXT);
 			else icon(g, s, x + 4, iconY, 12);
-			g.drawString(font, fit(name, w - 30), x + 22, y + (rowH - 8) / 2, TEXT, false);
+			g.text(fit(name, w - 30), x + 22, y + (rowH - 8) / 2, TEXT);
 			if (s == Section.SESSION && (m.running || !m.pending.isEmpty())) dot(g, x + w - 9, y + (rowH - 5) / 2, m.pending.isEmpty() ? GREEN : ORANGE);
 			if (s == null) {
 				hit(x, y, w, rowH, () -> {
@@ -329,7 +336,7 @@ public final class ClaudeScreen extends Screen {
 
 	// ---------- sections
 
-	private int home(GuiGraphics g, int mx, int my, int y) {
+	private int home(Canvas g, int mx, int my, int y) {
 		y = pendingBanner(g, mx, my, y);
 		y = heading(g, "Recent Sessions", m.homeLoaded ? plural(m.recent.size(), "session") : "loading…", y);
 		for (Model.Recent r : m.recent.subList(0, Math.min(3, m.recent.size()))) y = sessionCard(g, mx, my, r, y);
@@ -338,13 +345,13 @@ public final class ClaudeScreen extends Screen {
 		return pullRequests(g, mx, my, y, 4);
 	}
 
-	private int sessions(GuiGraphics g, int mx, int my, int y) {
+	private int sessions(Canvas g, int mx, int my, int y) {
 		y = heading(g, "Sessions", m.recent.size() + " across your projects", y);
 		for (Model.Recent r : m.recent) y = sessionCard(g, mx, my, r, y);
 		return y;
 	}
 
-	private int projects(GuiGraphics g, int mx, int my, int y) {
+	private int projects(Canvas g, int mx, int my, int y) {
 		y = heading(g, "Projects", plural(m.projects.size(), "project"), y);
 		for (Model.Project p : m.projects) {
 			boolean here = p.path().equals(m.cwd);
@@ -359,7 +366,7 @@ public final class ClaudeScreen extends Screen {
 		return y;
 	}
 
-	private int pullRequests(GuiGraphics g, int mx, int my, int y, int limit) {
+	private int pullRequests(Canvas g, int mx, int my, int y, int limit) {
 		y = heading(g, "Pull Requests", m.prsLoaded ? plural(m.prs.size(), "pull request") : "loading…", y);
 		if (m.prsError != null) return note(g, m.prsError, y);
 		if (m.prsLoaded && m.prs.isEmpty()) y = note(g, "No open pull requests.", y);
@@ -381,15 +388,15 @@ public final class ClaudeScreen extends Screen {
 	}
 
 	/** Project, mode, model and cost, pinned above the scrolling conversation. */
-	private void sessionStatus(GuiGraphics g, int mx, int my) {
+	private void sessionStatus(Canvas g, int mx, int my) {
 		g.fill(cx + 1, cy + 1, cx + cw - 1, cy + 17, PANE);
 		g.fill(cx + 1, cy + 17, cx + cw - 1, cy + 18, 0xFF2E2E2E);
 		String info = project() + "  ·  mode " + modeLabel(m.mode) + "  ·  " + modelLabel() + (m.cost != null ? String.format("  ·  $%.3f", m.cost) : "");
-		g.drawString(font, fit(info, cw - (m.running ? 60 : 14)), cx + 6, cy + 5, FAINT, false);
+		g.text(fit(info, cw - (m.running ? 60 : 14)), cx + 6, cy + 5, FAINT);
 		if (m.running) lightButton(g, mx, my, cx + cw - 50, cy + 2, 42, 14, "Stop", m::interrupt, List.of(Component.literal("Interrupt the current run")));
 	}
 
-	private int session(GuiGraphics g, int mx, int my, int y) {
+	private int session(Canvas g, int mx, int my, int y) {
 		y += 16;
 		int width = cw - 16;
 		if (m.transcript.isEmpty() && m.pending.isEmpty()) {
@@ -398,14 +405,14 @@ public final class ClaudeScreen extends Screen {
 		for (Model.Entry e : m.transcript) y = entry(g, mx, my, e, cx + 6, y, width);
 		if (m.running && m.pending.isEmpty()) {
 			String dots = ".".repeat((int) (Util.getMillis() / 400 % 4));
-			g.drawString(font, "Claude is working" + dots, cx + 6, y + 2, YELLOW, false);
+			g.text("Claude is working" + dots, cx + 6, y + 2, YELLOW);
 			y += 14;
 		}
 		for (Model.Pending p : new ArrayList<>(m.pending)) y = pendingCard(g, mx, my, p, y);
 		return y;
 	}
 
-	private int settings(GuiGraphics g, int mx, int my, int y) {
+	private int settings(Canvas g, int mx, int my, int y) {
 		y = heading(g, "Permission mode", "", y);
 		for (String[] mode : MODES) {
 			y = option(g, mx, my, y, mode[1], mode[2], mode[0].equals(m.mode), () -> m.setMode(mode[0]));
@@ -424,7 +431,7 @@ public final class ClaudeScreen extends Screen {
 		return note(g, "claude-ui on 127.0.0.1:" + Connection.PORT + (m.connected ? " · connected" : " · offline") + " · working in " + tilde(m.cwd), y);
 	}
 
-	private int offline(GuiGraphics g, int mx, int my, int y) {
+	private int offline(Canvas g, int mx, int my, int y) {
 		y = heading(g, ClaudeUIClient.CONNECTION.connecting() ? "Connecting…" : "Not connected", "", y);
 		y = note(g, (m.problem.isEmpty() ? "Looking for claude-ui on 127.0.0.1:" + Connection.PORT + "." : m.problem)
 			+ " It runs on this Mac: open the Claude UI app, or run npm start in the claude-ui folder, then press Retry.", y);
@@ -433,7 +440,7 @@ public final class ClaudeScreen extends Screen {
 		return y + 22;
 	}
 
-	private int attach(GuiGraphics g, int mx, int my, int y) {
+	private int attach(Canvas g, int mx, int my, int y) {
 		String where = m.lsPath == null ? "" : m.lsPath;
 		y = heading(g, "Attach a file", "/" + where, y);
 		lightButton(g, mx, my, cx + cw - 48, y - 15, 40, 13, "Close", () -> attachOpen = false, null);
@@ -467,7 +474,7 @@ public final class ClaudeScreen extends Screen {
 
 	// ---------- pieces
 
-	private int sessionCard(GuiGraphics g, int mx, int my, Model.Recent r, int y) {
+	private int sessionCard(Canvas g, int mx, int my, Model.Recent r, int y) {
 		boolean here = r.id().equals(m.sessionId);
 		String sub = r.project() + (r.branch() != null ? " · " + r.branch() : "") + (r.repo() != null ? " · " + r.repo() : "");
 		return card(g, mx, my, y, blockFor(r.project()), here ? (m.running ? GREEN : TEXT) : YELLOW, r.title(), sub, ago(r.updatedAt()), here,
@@ -478,48 +485,48 @@ public final class ClaudeScreen extends Screen {
 			List.of(Component.literal(r.title()), Component.literal(tilde(r.cwd())).withStyle(ChatFormatting.GRAY), Component.literal(here ? "Current session" : "Click to resume").withStyle(ChatFormatting.GRAY)));
 	}
 
-	private int card(GuiGraphics g, int mx, int my, int y, Item icon, int dotColor, String title, String sub, String right, boolean selected, Runnable action, List<Component> tooltip) {
+	private int card(Canvas g, int mx, int my, int y, Item icon, int dotColor, String title, String sub, String right, boolean selected, Runnable action, List<Component> tooltip) {
 		return card(g, mx, my, y, icon, dotColor, title, sub, right, 0, selected, action, tooltip);
 	}
 
 	/** A session-style row: icon, status dot, title and subtitle, a right-hand note, and `reserve` px kept free for a button. */
-	private int card(GuiGraphics g, int mx, int my, int y, Item icon, int dotColor, String title, String sub, String right, int reserve, boolean selected, Runnable action, List<Component> tooltip) {
+	private int card(Canvas g, int mx, int my, int y, Item icon, int dotColor, String title, String sub, String right, int reserve, boolean selected, Runnable action, List<Component> tooltip) {
 		int x = cx + 4, w = cw - 8, h = 26;
 		boolean hover = mx >= x && mx < x + w && my >= y && my < y + h && my >= cy && my < cy + ch;
 		g.fill(x, y, x + w, y + h, selected ? SELECT_EDGE : CARD_EDGE);
 		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, selected ? SELECT_BG : hover ? CARD_HOVER : CARD);
-		g.renderItem(new ItemStack(icon), x + 5, y + 5);
+		g.item(new ItemStack(icon), x + 5, y + 5, 16);
 		dot(g, x + 27, y + 6, dotColor);
 		int rightW = (right.isEmpty() ? 0 : font.width(right) + 8) + reserve;
-		g.drawString(font, fit(title, w - 50 - rightW), x + 36, y + 4, TEXT, false);
-		g.drawString(font, fit(sub, w - 50 - rightW), x + 36, y + 15, DIM, false);
-		if (!right.isEmpty()) g.drawString(font, right, x + w - 14 - font.width(right), y + 9, DIM, false);
-		g.drawString(font, ">", x + w - 9, y + 9, hover ? TEXT : FAINT, false);
+		g.text(fit(title, w - 50 - rightW), x + 36, y + 4, TEXT);
+		g.text(fit(sub, w - 50 - rightW), x + 36, y + 15, DIM);
+		if (!right.isEmpty()) g.text(right, x + w - 14 - font.width(right), y + 9, DIM);
+		g.text(">", x + w - 9, y + 9, hover ? TEXT : FAINT);
 		hit(x, y, w, h, action, tooltip);
 		return y + h + 3;
 	}
 
-	private int option(GuiGraphics g, int mx, int my, int y, String title, String sub, boolean on, Runnable action) {
+	private int option(Canvas g, int mx, int my, int y, String title, String sub, boolean on, Runnable action) {
 		int x = cx + 4, w = cw - 8, h = 22;
 		boolean hover = mx >= x && mx < x + w && my >= y && my < y + h;
 		g.fill(x, y, x + w, y + h, on ? SELECT_EDGE : CARD_EDGE);
 		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, on ? SELECT_BG : hover ? CARD_HOVER : CARD);
 		g.fill(x + 6, y + 7, x + 14, y + 15, on ? 0xFF9BC1FF : 0xFF5A5A5A);
 		if (!on) g.fill(x + 7, y + 8, x + 13, y + 14, CARD);
-		g.drawString(font, fit(title, w - 30), x + 20, y + 3, TEXT, false);
-		g.drawString(font, fit(sub, w - 30), x + 20, y + 12, FAINT, false);
+		g.text(fit(title, w - 30), x + 20, y + 3, TEXT);
+		g.text(fit(sub, w - 30), x + 20, y + 12, FAINT);
 		hit(x, y, w, h, action, null);
 		return y + h + 2;
 	}
 
-	private int entry(GuiGraphics g, int mx, int my, Model.Entry e, int x, int y, int width) {
+	private int entry(Canvas g, int mx, int my, Model.Entry e, int x, int y, int width) {
 		List<FormattedCharSequence> lines = lines(e, width - (e.kind == Model.Kind.USER ? 8 : 0));
 		switch (e.kind) {
 			case USER -> {
 				int h = lines.size() * 10 + 6;
 				g.fill(x - 2, y, x + width, y + h, 0xFF262626);
 				g.fill(x - 2, y, x, y + h, ORANGE);
-				for (int i = 0; i < lines.size(); i++) g.drawString(font, lines.get(i), x + 5, y + 3 + i * 10, TEXT, false);
+				for (int i = 0; i < lines.size(); i++) g.text(lines.get(i), x + 5, y + 3 + i * 10, TEXT);
 				return y + h + 5;
 			}
 			case TOOL -> {
@@ -527,15 +534,15 @@ public final class ClaudeScreen extends Screen {
 				int indent = e.sub ? 10 : 0;
 				dot(g, x + indent, y + 2, color);
 				String name = e.toolName;
-				g.drawString(font, name, x + indent + 9, y, TEXT, false);
-				g.drawString(font, fit(e.text.toString(), width - indent - 16 - font.width(name)), x + indent + 13 + font.width(name), y, DIM, false);
+				g.text(name, x + indent + 9, y, TEXT);
+				g.text(fit(e.text.toString(), width - indent - 16 - font.width(name)), x + indent + 13 + font.width(name), y, DIM);
 				List<Component> tip = new ArrayList<>();
 				for (String l : e.detail.split("\n")) tip.add(Component.literal(l));
 				if (!e.output.isEmpty()) tip.add(Component.literal(e.expanded ? "Click to collapse" : "Click to see the output").withStyle(ChatFormatting.GRAY));
 				hit(x, y - 1, width, 10, e.output.isEmpty() ? null : () -> e.expanded = !e.expanded, tip);
 				y += 11;
 				for (FormattedCharSequence l : lines) {
-					g.drawString(font, l, x + indent + 9, y, e.state == 2 ? RED : FAINT, false);
+					g.text(l, x + indent + 9, y, e.state == 2 ? RED : FAINT);
 					y += 10;
 				}
 				return y + 1;
@@ -543,7 +550,7 @@ public final class ClaudeScreen extends Screen {
 			default -> {
 				int color = e.kind == Model.Kind.ERROR ? RED : e.kind == Model.Kind.INFO ? FAINT : TEXT;
 				for (FormattedCharSequence l : lines) {
-					g.drawString(font, l, x, y, color, false);
+					g.text(l, x, y, color);
 					y += 10;
 				}
 				return y + 4;
@@ -607,13 +614,13 @@ public final class ClaudeScreen extends Screen {
 		return out;
 	}
 
-	private int pendingBanner(GuiGraphics g, int mx, int my, int y) {
+	private int pendingBanner(Canvas g, int mx, int my, int y) {
 		if (m.pending.isEmpty()) return y;
 		Model.Pending p = m.pending.get(0);
 		return card(g, mx, my, y, Items.BELL, ORANGE, "Claude needs your OK", p.what, "open", false, () -> select(Section.SESSION), null);
 	}
 
-	private int pendingCard(GuiGraphics g, int mx, int my, Model.Pending p, int y) {
+	private int pendingCard(Canvas g, int mx, int my, Model.Pending p, int y) {
 		int x = cx + 4, w = cw - 8;
 		List<FormattedCharSequence> body = new ArrayList<>();
 		String title;
@@ -627,16 +634,16 @@ public final class ClaudeScreen extends Screen {
 		int h = 16 + body.size() * 10 + questionRows * 16 + 22;
 		g.fill(x, y, x + w, y + h, ORANGE);
 		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, 0xFF2B2219);
-		g.drawString(font, fit(title, w - 12), x + 6, y + 5, YELLOW, false);
+		g.text(fit(title, w - 12), x + 6, y + 5, YELLOW);
 		int ly = y + 17;
 		for (FormattedCharSequence l : body) {
-			g.drawString(font, l, x + 6, ly, DIM, false);
+			g.text(l, x + 6, ly, DIM);
 			ly += 10;
 		}
 		if (p.questions != null) {
 			Map<String, String> answers = p.answers;
 			for (Model.Question q : p.questions) {
-				g.drawString(font, fit(q.question(), w - 12), x + 6, ly + 2, TEXT, false);
+				g.text(fit(q.question(), w - 12), x + 6, ly + 2, TEXT);
 				ly += 16;
 				for (int i = 0; i < q.options().size(); i++) {
 					String label = q.options().get(i);
@@ -665,16 +672,17 @@ public final class ClaudeScreen extends Screen {
 		return n + " " + word + (n == 1 ? "" : "s");
 	}
 
-	private void promptBar(GuiGraphics g) {
+	private void promptBar(Canvas g) {
 		g.fill(ix, iy, ix + iw, iy + ih, BLACK);
 		g.fill(ix + 1, iy + 1, ix + iw - 1, iy + ih - 1, 0xFF101010);
 		g.fill(ix + 1, iy + 1, ix + iw - 1, iy + 2, 0xFF3A3A3A);
-		g.drawString(font, ">_", ix + 6, iy + 5, TEXT, false);
+		g.text(">_", ix + 6, iy + 5, TEXT);
 		g.fill(ix + 18, iy + 4, ix + 19, iy + ih - 4, 0xFF4A4A4A);
-		if (input.getValue().isEmpty()) g.drawString(font, m.running ? "Claude is working… press Stop to interrupt" : "Describe a task or ask a question…", ix + 24, iy + 5, FAINT, false);
+		if (offscreen && !draft.isEmpty()) g.text(fit(draft, iw - 30), ix + 24, iy + 5, TEXT);
+		else if (input.getValue().isEmpty()) g.text(m.running ? "Claude is working… press Stop to interrupt" : "Describe a task or ask a question…", ix + 24, iy + 5, FAINT);
 	}
 
-	private void buttons(GuiGraphics g, int mx, int my) {
+	private void buttons(Canvas g, int mx, int my) {
 		int x = ix;
 		x += lightButton(g, mx, my, x, by, 54, 16, attachOpen ? "Attach ✔" : "Attach", () -> {
 			if (attachOpen) attachOpen = false;
@@ -703,31 +711,31 @@ public final class ClaudeScreen extends Screen {
 		m.setMode(MODES[(i + 1) % MODES.length][0]);
 	}
 
-	private int heading(GuiGraphics g, String title, String right, int y) {
-		g.drawString(font, title, cx + 6, y + 2, TEXT, false);
-		if (!right.isEmpty()) g.drawString(font, right, cx + cw - 8 - font.width(right), y + 2, DIM, false);
+	private int heading(Canvas g, String title, String right, int y) {
+		g.text(title, cx + 6, y + 2, TEXT);
+		if (!right.isEmpty()) g.text(right, cx + cw - 8 - font.width(right), y + 2, DIM);
 		return y + 15;
 	}
 
-	private int note(GuiGraphics g, String text, int y) {
+	private int note(Canvas g, String text, int y) {
 		for (FormattedCharSequence l : font.split(Component.literal(text), cw - 16)) {
-			g.drawString(font, l, cx + 6, y, DIM, false);
+			g.text(l, cx + 6, y, DIM);
 			y += 10;
 		}
 		return y + 4;
 	}
 
 	/** A vanilla-looking light button; returns its width. */
-	private int lightButton(GuiGraphics g, int mx, int my, int x, int y, int w, int h, String label, Runnable action, List<Component> tooltip) {
+	private int lightButton(Canvas g, int mx, int my, int x, int y, int w, int h, String label, Runnable action, List<Component> tooltip) {
 		boolean hover = mx >= x && mx < x + w && my >= y && my < y + h;
 		bevel(g, x, y, w, h, hover ? 0xFFDADADA : PANEL);
-		if (hover) g.renderOutline(x, y, w, h, HI);
-		g.drawString(font, fit(label, w - 6), x + (w - Math.min(w - 6, font.width(label))) / 2, y + (h - 8) / 2, LABEL, false);
+		if (hover) g.outline(x, y, w, h, HI);
+		g.text(fit(label, w - 6), x + (w - Math.min(w - 6, font.width(label))) / 2, y + (h - 8) / 2, LABEL);
 		hit(x, y, w, h, action, tooltip);
 		return w;
 	}
 
-	private void scrollbar(GuiGraphics g, double offset, double max) {
+	private void scrollbar(Canvas g, double offset, double max) {
 		int trackH = ch - 4, thumbH = Math.max(12, (int) (trackH * (ch - 8) / (double) contentHeight));
 		int ty = cy + 2 + (int) ((trackH - thumbH) * (offset / max));
 		g.fill(cx + cw - 4, cy + 2, cx + cw - 2, cy + ch - 2, 0xFF262626);
@@ -736,6 +744,7 @@ public final class ClaudeScreen extends Screen {
 
 	/** Registers a click / hover area; parts outside the scrolling pane are trimmed so they can't be clicked. */
 	private void hit(int x, int y, int w, int h, Runnable action, List<Component> tooltip) {
+		if (offscreen) return;
 		boolean inContent = x >= cx && x < cx + cw && y < cy + ch + 40 && y + h > cy - 40 && !(y >= iy);
 		if (inContent) {
 			int top = Math.max(y, cy + 1), bottom = Math.min(y + h, cy + ch - 1);
@@ -749,7 +758,7 @@ public final class ClaudeScreen extends Screen {
 	// ---------- drawing helpers
 
 	/** Inventory-style raised frame. */
-	static void panel(GuiGraphics g, int x, int y, int w, int h) {
+	static void panel(Canvas g, int x, int y, int w, int h) {
 		g.fill(x + 1, y, x + w - 1, y + h, BLACK);
 		g.fill(x, y + 1, x + w, y + h - 1, BLACK);
 		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, PANEL);
@@ -759,7 +768,7 @@ public final class ClaudeScreen extends Screen {
 		g.fill(x + w - 3, y + 3, x + w - 1, y + h - 1, SHADOW);
 	}
 
-	static void bevel(GuiGraphics g, int x, int y, int w, int h, int face) {
+	static void bevel(Canvas g, int x, int y, int w, int h, int face) {
 		g.fill(x, y, x + w, y + h, BLACK);
 		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, face);
 		g.fill(x + 1, y + 1, x + w - 1, y + 2, HI);
@@ -769,19 +778,19 @@ public final class ClaudeScreen extends Screen {
 	}
 
 	/** Sunken dark pane. */
-	static void pane(GuiGraphics g, int x, int y, int w, int h) {
+	static void pane(Canvas g, int x, int y, int w, int h) {
 		g.fill(x, y, x + w, y + h, 0xFF373737);
 		g.fill(x + 1, y + 1, x + w, y + h, HI);
 		g.fill(x + 1, y + 1, x + w - 1, y + h - 1, PANE);
 	}
 
-	static void dot(GuiGraphics g, int x, int y, int color) {
+	static void dot(Canvas g, int x, int y, int color) {
 		g.fill(x + 1, y, x + 4, y + 5, color);
 		g.fill(x, y + 1, x + 5, y + 4, color);
 	}
 
 	/** The Claude mark, drawn as pixel rays. */
-	static void starburst(GuiGraphics g, int x, int y, int size, int color) {
+	static void starburst(Canvas g, int x, int y, int size, int color) {
 		int c = size / 2, t = Math.max(1, size / 8);
 		for (int i = 1; i < size - 1; i++) {
 			g.fill(x + i, y + c - t / 2, x + i + 1, y + c - t / 2 + t, color);
@@ -794,7 +803,7 @@ public final class ClaudeScreen extends Screen {
 		g.fill(x + c - t, y + c - t, x + c + t, y + c + t, color);
 	}
 
-	private void icon(GuiGraphics g, Section s, int x, int y, int size) {
+	private void icon(Canvas g, Section s, int x, int y, int size) {
 		if (s == Section.HOME) {
 			starburst(g, x, y, size, ORANGE);
 			return;
@@ -806,15 +815,7 @@ public final class ClaudeScreen extends Screen {
 			case SETTINGS -> Items.COMPARATOR;
 			default -> Items.COMPASS;
 		};
-		if (size == 16) {
-			g.renderItem(new ItemStack(item), x, y);
-			return;
-		}
-		g.pose().pushMatrix();
-		g.pose().translate(x, y);
-		g.pose().scale(size / 16f, size / 16f);
-		g.renderItem(new ItemStack(item), 0, 0);
-		g.pose().popMatrix();
+		g.item(new ItemStack(item), x, y, size);
 	}
 
 	// ---------- text helpers

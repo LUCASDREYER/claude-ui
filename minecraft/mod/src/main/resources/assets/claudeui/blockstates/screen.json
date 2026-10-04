@@ -1,0 +1,8 @@
+{
+	"variants": {
+		"facing=north": { "model": "claudeui:block/screen" },
+		"facing=east": { "model": "claudeui:block/screen", "y": 90 },
+		"facing=south": { "model": "claudeui:block/screen", "y": 180 },
+		"facing=west": { "model": "claudeui:block/screen", "y": 270 }
+	}
+}
