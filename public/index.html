@@ -34,7 +34,7 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  display: grid; grid-template-rows: auto auto 1fr auto auto;
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
   background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans);
 }
 button {
@@ -54,12 +54,51 @@ button.ghost:hover { color: var(--fg); border-color: var(--line); }
 }
 #top .brand { font: 600 12px var(--mono); color: var(--accent); }
 #top .spacer { flex: 1; }
+#top #side-btn { padding: 0 4px; font-size: 14px; }
+#top-cwd { font: 11.5px var(--mono); }
 #banner {
   padding: 5px 12px; font-size: 12.5px; display: flex; gap: 10px; align-items: center;
   background: var(--bg-2); border-bottom: 1px solid var(--line);
 }
 #banner.warn { color: var(--warn); }
 #banner.err { color: var(--err); }
+
+/* layout */
+#workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 0; }
+body.side-hidden #workspace { grid-template-columns: minmax(0, 1fr); }
+body.side-hidden #side { display: none; }
+#main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
+
+/* sidebar */
+#side {
+  display: flex; flex-direction: column; min-height: 0; font-size: 12.5px;
+  background: var(--bg-1); border-right: 1px solid var(--line);
+}
+#side section { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+#side section.grow { flex: 1; overflow-y: auto; border-bottom: 0; }
+.side-h {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;
+  font: 600 11px var(--sans); letter-spacing: .05em; text-transform: uppercase; color: var(--dim);
+}
+#side input {
+  width: 100%; font: 12px var(--mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; outline: none;
+}
+#side input:focus { border-color: var(--dim); }
+#side ul { list-style: none; margin: 6px 0 0; padding: 0; }
+#side li { padding: 3px 6px; border-radius: 3px; cursor: pointer; }
+#side li:hover { background: var(--bg-2); }
+#side li.active { background: var(--bg-2); box-shadow: inset 2px 0 var(--accent); }
+#recent li { font: 11.5px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#recent li.active { color: var(--fg); }
+.s-title { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-meta { font: 10.5px var(--mono); color: var(--faint); }
+.empty { color: var(--faint); font-size: 12px; padding: 3px 6px; }
+#resume-form { margin-top: 10px; }
+@media (max-width: 760px) {
+  #workspace { grid-template-columns: minmax(0, 1fr); }
+  #side { position: fixed; z-index: 5; top: 29px; bottom: 0; left: 0; width: 280px; box-shadow: 4px 0 12px rgb(0 0 0 / .3); }
+}
 
 /* transcript */
 #chat { overflow-y: auto; min-height: 0; }
@@ -163,18 +202,36 @@ pre {
 </head>
 <body>
 <header id="top">
+  <button id="side-btn" class="ghost" type="button" title="Toggle sidebar">&#9776;</button>
   <span class="brand">claude-ui</span>
+  <span id="top-cwd" class="tdesc"></span>
   <span class="spacer"></span>
   <button id="theme-btn" class="ghost" type="button" title="Toggle light/dark">theme</button>
 </header>
 <div id="banner" hidden></div>
-<main id="chat"><div id="log"></div></main>
-<form id="composer">
-  <div class="row">
-    <textarea id="input" rows="1" placeholder="Message Claude  (Enter to send, Shift+Enter for newline)" autofocus></textarea>
-    <button id="send" class="primary" type="submit">Send</button>
+<div id="workspace">
+  <aside id="side">
+    <section>
+      <div class="side-h">Directory</div>
+      <form id="cwd-form"><input id="cwd-input" spellcheck="false" autocomplete="off" placeholder="~/path/to/project"></form>
+      <ul id="recent"></ul>
+    </section>
+    <section class="grow">
+      <div class="side-h">Sessions <button id="new-btn" type="button">New</button></div>
+      <ul id="sessions"></ul>
+      <form id="resume-form"><input id="resume-input" spellcheck="false" autocomplete="off" placeholder="Resume by session ID"></form>
+    </section>
+  </aside>
+  <div id="main">
+    <main id="chat"><div id="log"></div></main>
+    <form id="composer">
+      <div class="row">
+        <textarea id="input" rows="1" placeholder="Message Claude  (Enter to send, Shift+Enter for newline)" autofocus></textarea>
+        <button id="send" class="primary" type="submit">Send</button>
+      </div>
+    </form>
   </div>
-</form>
+</div>
 
 <script nonce="__NONCE__">
 'use strict';
@@ -187,7 +244,7 @@ function h(tag, cls, text) {
 }
 
 const chat = $('#chat'), log = $('#log'), input = $('#input'), sendBtn = $('#send');
-const app = { ws: null, running: false, cwd: '' };
+const app = { ws: null, running: false, cwd: '', home: '', sessionId: null, sessions: [], recentDirs: [] };
 
 // ---------- theme
 $('#theme-btn').addEventListener('click', () => {
@@ -322,6 +379,7 @@ function toolCard(id, name, container) {
 function shortPath(p) {
   return app.cwd && p.startsWith(app.cwd + '/') ? p.slice(app.cwd.length + 1) : p;
 }
+const tilde = (p) => (app.home && (p === app.home || p.startsWith(app.home + '/')) ? '~' + p.slice(app.home.length) : p);
 
 function describe(input) {
   if (!input || typeof input !== 'object') return '';
@@ -476,6 +534,88 @@ function onSdk(m) {
   }
 }
 
+// ---------- transcript reset + history replay
+function clearTranscript() {
+  log.replaceChildren();
+  cards.clear(); blocks.clear(); current.clear(); streamed.clear();
+  stick = true;
+}
+
+const HISTORY_LIMIT = 400;
+function renderHistory(messages) {
+  clearTranscript();
+  const shown = messages.slice(-HISTORY_LIMIT);
+  if (messages.length > shown.length) notice(`${messages.length - shown.length} earlier messages not shown`);
+  for (const m of shown) {
+    if (m.type === 'assistant') onAssistant({ message: m.message, parent_tool_use_id: m.parent_tool_use_id });
+    if (m.type !== 'user') continue;
+    const c = m.message?.content;
+    const text = typeof c === 'string' ? c
+      : Array.isArray(c) ? c.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
+    // Skip injected context such as <system-reminder> or <command-name> blocks.
+    if (text.trim() && !m.parent_tool_use_id && !/^\s*<[a-z-]+>/i.test(text)) userBubble(text);
+    onUser(m);
+  }
+  for (const card of cards.values()) {
+    if (card.el.dataset.status === 'running') card.el.dataset.status = 'stopped';
+  }
+  notice('resumed \u2014 new messages continue this session');
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// ---------- sidebar
+function ago(ms) {
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return 'now';
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d`;
+  return new Date(ms).toLocaleDateString();
+}
+
+function renderSidebar() {
+  $('#top-cwd').textContent = tilde(app.cwd);
+  const recent = $('#recent');
+  recent.replaceChildren(...app.recentDirs.map((d) => {
+    const li = h('li', d === app.cwd ? 'active' : '', tilde(d));
+    li.title = d;
+    li.addEventListener('click', () => setCwd(d));
+    return li;
+  }));
+  const list = $('#sessions');
+  if (!app.sessions.length) return list.replaceChildren(h('li', 'empty', 'No sessions in this directory yet'));
+  list.replaceChildren(...app.sessions.map((s) => {
+    const li = h('li', s.id === app.sessionId ? 'active' : '');
+    li.title = s.id;
+    li.append(h('span', 's-title', s.title), h('span', 's-meta', `${ago(s.updatedAt)} \u00b7 ${s.id.slice(0, 8)}`));
+    li.addEventListener('click', () => resume(s.id));
+    return li;
+  }));
+}
+
+function guardIdle() {
+  if (!app.running) return true;
+  notice('Stop the current run first.', 'warn');
+  return false;
+}
+function setCwd(dir) { if (guardIdle() && dir) send({ type: 'set_cwd', cwd: dir }); }
+function resume(id) { if (guardIdle() && id && id !== app.sessionId) send({ type: 'resume', sessionId: id }); }
+
+$('#cwd-form').addEventListener('submit', (e) => { e.preventDefault(); setCwd($('#cwd-input').value.trim()); });
+$('#resume-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  resume($('#resume-input').value.trim());
+  $('#resume-input').value = '';
+});
+$('#new-btn').addEventListener('click', () => {
+  if (!guardIdle()) return;
+  send({ type: 'new_session' });
+  clearTranscript();
+  input.focus();
+});
+$('#side-btn').addEventListener('click', () => document.body.classList.toggle('side-hidden'));
+if (window.innerWidth < 760) document.body.classList.add('side-hidden');
+
 // ---------- connection
 function banner(text, cls = '', action) {
   const b = $('#banner');
@@ -510,11 +650,23 @@ function connect() {
     const msg = JSON.parse(e.data);
     switch (msg.type) {
       case 'hello':
-        app.cwd = msg.cwd;
+        app.home = msg.home;
         if (msg.apiKeyPresent) {
           banner('ANTHROPIC_API_KEY is set in the server environment: usage bills the API, not your subscription.', 'warn');
         }
         break;
+      case 'cwd':
+        Object.assign(app, { cwd: msg.cwd, recentDirs: msg.recentDirs, sessions: msg.sessions, sessionId: msg.sessionId });
+        $('#cwd-input').value = tilde(msg.cwd);
+        clearTranscript();
+        renderSidebar();
+        break;
+      case 'session':
+        app.sessionId = msg.sessionId;
+        app.sessions = msg.sessions;
+        renderSidebar();
+        break;
+      case 'history': renderHistory(msg.messages); break;
       case 'sdk': onSdk(msg.msg); break;
       case 'running': setRunning(msg.running); break;
       case 'error': notice(msg.message, 'err'); break;

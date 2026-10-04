@@ -1,17 +1,27 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
-import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  getSessionInfo,
+  getSessionMessages,
+  query,
+  type Query,
+  type SDKMessage,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
+import { SessionStore } from './sessions.js';
 
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.PORT) || 3456;
 const HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 const ORIGINS = new Set([...HOSTS].map((h) => `http://${h}`));
+const store = new SessionStore(path.join(ROOT, 'sessions.json'));
 
 // Presence check only; the value is never read.
 const apiKeyPresent = 'ANTHROPIC_API_KEY' in process.env;
@@ -22,7 +32,12 @@ if (apiKeyPresent) {
   );
 }
 
-type ClientMsg = { type: 'prompt'; text: string } | { type: 'interrupt' };
+type ClientMsg =
+  | { type: 'prompt'; text: string }
+  | { type: 'interrupt' }
+  | { type: 'set_cwd'; cwd: string }
+  | { type: 'new_session' }
+  | { type: 'resume'; sessionId: string };
 
 /** User turns for a streaming-input query. Stays open between turns so the CLI process is reused. */
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -59,12 +74,15 @@ class Conn {
   private q: Query | null = null;
   private input: InputQueue | null = null;
   private running = false;
-  private cwd = process.cwd();
+  private cwd = store.recentDirs()[0] ?? process.cwd();
+  private sessionId: string | null = null;
+  private title = '';
 
   constructor(private ws: WebSocket) {
     ws.on('message', (data) => this.onClientMessage(data.toString()));
     ws.on('close', () => this.stop());
-    this.send({ type: 'hello', cwd: this.cwd, apiKeyPresent });
+    this.send({ type: 'hello', home: os.homedir(), apiKeyPresent });
+    this.sendCwd();
   }
 
   send(msg: unknown) {
@@ -92,11 +110,67 @@ class Conn {
       case 'interrupt':
         this.q?.interrupt().catch((err) => this.sendError(err));
         return;
+      case 'set_cwd':
+        return void this.setCwd(String(msg.cwd ?? ''));
+      case 'new_session':
+        return this.newSession();
+      case 'resume':
+        return void this.resume(String(msg.sessionId ?? '').trim());
     }
+  }
+
+  private busy() {
+    if (this.running) this.sendError('Stop the current run first.');
+    return this.running;
+  }
+
+  private async setCwd(input: string) {
+    if (this.busy()) return;
+    const dir = path.resolve(input.trim().replace(/^~(?=$|\/)/, os.homedir()));
+    const stat = await fs.stat(dir).catch(() => null);
+    if (!stat?.isDirectory()) return this.sendError(`Not a directory: ${dir}`);
+    this.stop();
+    this.cwd = dir;
+    this.sessionId = null;
+    store.touchDir(dir);
+    this.sendCwd();
+  }
+
+  private sendCwd() {
+    this.send({
+      type: 'cwd',
+      cwd: this.cwd,
+      recentDirs: store.recentDirs(),
+      sessions: store.list(this.cwd),
+      sessionId: this.sessionId,
+    });
+  }
+
+  private newSession() {
+    if (this.busy()) return;
+    this.stop();
+    this.sessionId = null;
+    this.send({ type: 'session', sessionId: null, sessions: store.list(this.cwd) });
+  }
+
+  private async resume(id: string) {
+    if (this.busy()) return;
+    if (!/^[\w-]{8,64}$/.test(id)) return this.sendError('Invalid session ID.');
+    const messages = await getSessionMessages(id, { dir: this.cwd }).catch(() => []);
+    if (!messages.length) return this.sendError(`No session ${id} found for ${this.cwd}`);
+    this.stop();
+    this.sessionId = id;
+    if (!store.has(this.cwd, id)) {
+      const info = await getSessionInfo(id, { dir: this.cwd }).catch(() => undefined);
+      store.upsert(this.cwd, id, { title: info?.customTitle ?? info?.summary ?? id });
+    }
+    this.send({ type: 'session', sessionId: id, sessions: store.list(this.cwd) });
+    this.send({ type: 'history', sessionId: id, messages });
   }
 
   private prompt(text: string) {
     if (!text.trim() || this.running) return;
+    if (!this.sessionId) this.title = text;
     if (!this.q) this.start();
     this.input!.push(text);
     this.setRunning(true);
@@ -108,6 +182,7 @@ class Conn {
       prompt: input,
       options: {
         cwd: this.cwd,
+        resume: this.sessionId ?? undefined,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         includePartialMessages: true,
         // No approval UI yet: anything that would prompt is denied.
@@ -135,7 +210,16 @@ class Conn {
   }
 
   private onSdkMessage(m: SDKMessage) {
-    if (m.type === 'result') this.setRunning(false);
+    const sid = 'session_id' in m && typeof m.session_id === 'string' ? m.session_id : null;
+    if (sid && sid !== this.sessionId) {
+      store.upsert(this.cwd, sid, { title: this.title, replaces: this.sessionId });
+      this.sessionId = sid;
+      this.send({ type: 'session', sessionId: sid, sessions: store.list(this.cwd) });
+    }
+    if (m.type === 'result') {
+      this.setRunning(false);
+      if (this.sessionId) store.touch(this.cwd, this.sessionId);
+    }
     this.send({ type: 'sdk', msg: m });
   }
 
