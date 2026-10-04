@@ -34,7 +34,7 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex; flex-direction: column;
   background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans);
 }
 button {
@@ -55,16 +55,16 @@ button.ghost:hover { color: var(--fg); border-color: var(--line); }
 #top .brand { font: 600 12px var(--mono); color: var(--accent); }
 #top .spacer { flex: 1; }
 #top #side-btn { padding: 0 4px; font-size: 14px; }
-#top-cwd { font: 11.5px var(--mono); }
 #banner {
   padding: 5px 12px; font-size: 12.5px; display: flex; gap: 10px; align-items: center;
   background: var(--bg-2); border-bottom: 1px solid var(--line);
 }
+#banner[hidden] { display: none; }
 #banner.warn { color: var(--warn); }
 #banner.err { color: var(--err); }
 
 /* layout */
-#workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 0; }
+#workspace { flex: 1; display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 0; }
 body.side-hidden #workspace { grid-template-columns: minmax(0, 1fr); }
 body.side-hidden #side { display: none; }
 #main { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
@@ -186,6 +186,20 @@ pre {
 .ln-add { background: var(--add-bg); color: var(--ok); display: block; }
 .ln-del { background: var(--del-bg); color: var(--err); display: block; }
 
+/* status bar */
+#status {
+  display: flex; align-items: center; padding: 2px 12px; min-width: 0;
+  font: 11.5px/1.6 var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden;
+  background: var(--bg-1); border-top: 1px solid var(--line);
+}
+#status .sep { color: var(--faint); margin: 0 8px; }
+#status .grow { flex: 1; }
+#status .warn { color: var(--warn); }
+#status .err { color: var(--err); }
+#status .clip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#status button { all: unset; cursor: pointer; }
+#status button:hover { color: var(--fg); text-decoration: underline; }
+
 /* permission prompts */
 .perm { border: 1px solid var(--warn); background: var(--bg-1); margin: 6px 0; border-radius: 3px; font-size: 13px; }
 .perm.settled { border-color: var(--line); opacity: .7; }
@@ -238,7 +252,6 @@ button.deny { color: var(--err); }
 <header id="top">
   <button id="side-btn" class="ghost" type="button" title="Toggle sidebar">&#9776;</button>
   <span class="brand">claude-ui</span>
-  <span id="top-cwd" class="tdesc"></span>
   <span class="spacer"></span>
   <button id="theme-btn" class="ghost" type="button" title="Toggle light/dark">theme</button>
 </header>
@@ -274,6 +287,8 @@ button.deny { color: var(--err); }
     </form>
   </div>
 </div>
+
+<footer id="status"></footer>
 
 <script nonce="__NONCE__">
 'use strict';
@@ -547,6 +562,7 @@ function onResult(m) {
   if (m.subtype !== 'success') parts.push(m.subtype.replace(/_/g, ' '));
   if (m.duration_ms != null) parts.push(`${(m.duration_ms / 1000).toFixed(1)}s`);
   if (m.num_turns) parts.push(`${m.num_turns} turn${m.num_turns === 1 ? '' : 's'}`);
+  if (m.usage?.output_tokens) parts.push(`${fmtTok(m.usage.output_tokens)} out`);
   log.append(h('div', `turn-end ${m.is_error ? 'err' : ''}`, parts.join(' · ')));
   // A failed 'success' turn already showed its text via the assistant message.
   if (m.errors?.length) notice(m.errors.join('\n'), 'err');
@@ -568,6 +584,7 @@ function onSystem(m) {
 }
 
 function onSdk(m) {
+  trackUsage(m);
   switch (m.type) {
     case 'stream_event': return onStreamEvent(m);
     case 'assistant': return onAssistant(m);
@@ -690,6 +707,89 @@ for (const b of document.querySelectorAll('#modes button')) {
   b.addEventListener('click', () => send({ type: 'set_mode', mode: b.dataset.mode }));
 }
 
+// ---------- status bar
+const stats = { model: '', apiKeySource: 'none', ctxTokens: 0, ctxWindow: 0, inTok: 0, outTok: 0, cost: null };
+
+function resetStats() {
+  Object.assign(stats, { ctxTokens: 0, inTok: 0, outTok: 0, cost: null });
+  renderStatus();
+}
+
+function fmtTok(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'k';
+  return String(n);
+}
+
+function renderStatus() {
+  const parts = [];
+  const seg = (text, cls = '', title = '') => {
+    const e = h('span', cls, text);
+    if (title) e.title = title;
+    parts.push(e);
+    return e;
+  };
+  seg(stats.model ? stats.model.replace(/^claude-/, '') : 'model: default', '', 'Model');
+  seg(tilde(app.cwd), 'clip', app.cwd);
+  if (app.sessionId) {
+    const b = h('button', null, `session ${app.sessionId.slice(0, 8)}`);
+    b.title = `${app.sessionId} (click to copy)`;
+    b.addEventListener('click', () => navigator.clipboard.writeText(app.sessionId).then(() => notice(`copied session ID ${app.sessionId}`)));
+    parts.push(b);
+  } else {
+    seg('new session');
+  }
+  parts.push(h('span', 'grow'));
+  if (stats.ctxTokens) {
+    const pct = stats.ctxWindow ? Math.round((stats.ctxTokens / stats.ctxWindow) * 100) : null;
+    const text = `ctx ${fmtTok(stats.ctxTokens)}` + (pct != null ? `/${fmtTok(stats.ctxWindow)} ${pct}%` : '');
+    seg(text, pct >= 90 ? 'err' : pct >= 70 ? 'warn' : '', 'Context used by the last request');
+  }
+  if (stats.inTok || stats.outTok) {
+    seg(`in ${fmtTok(stats.inTok)} \u00b7 out ${fmtTok(stats.outTok)}`, '', 'Session tokens (input includes cache reads/writes)');
+  }
+  if (stats.cost != null) {
+    seg(`$${stats.cost.toFixed(stats.cost < 1 ? 3 : 2)} est.`, '', 'Estimated API-equivalent cost of this session (counts against your Agent SDK credit)');
+  }
+  if (stats.apiKeySource && stats.apiKeySource !== 'none') {
+    seg(`billing: ${stats.apiKeySource}`, 'warn', 'Requests are authenticated with an API key, not your subscription');
+  }
+  const bar = $('#status');
+  bar.replaceChildren();
+  parts.forEach((p, i) => {
+    const prev = parts[i - 1];
+    if (i && !p.classList.contains('grow') && !prev.classList.contains('grow')) bar.append(h('span', 'sep', '\u2502'));
+    bar.append(p);
+  });
+}
+
+function trackUsage(m) {
+  if (m.type === 'system' && m.subtype === 'init') {
+    stats.model = m.model;
+    stats.apiKeySource = m.apiKeySource;
+  } else if (m.type === 'assistant' && !m.parent_tool_use_id && m.message?.usage) {
+    const u = m.message.usage;
+    stats.ctxTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0)
+      + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0);
+    if (m.message.model) stats.model = m.message.model;
+  } else if (m.type === 'result') {
+    if (typeof m.total_cost_usd === 'number') stats.cost = m.total_cost_usd;
+    const models = Object.entries(m.modelUsage || {});
+    if (models.length) {
+      stats.inTok = stats.outTok = 0;
+      for (const [, u] of models) {
+        stats.inTok += u.inputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens;
+        stats.outTok += u.outputTokens;
+      }
+      const main = m.modelUsage[stats.model] || models.sort((a, b) => b[1].costUSD - a[1].costUSD)[0][1];
+      stats.ctxWindow = main.contextWindow || stats.ctxWindow;
+    }
+  } else {
+    return;
+  }
+  renderStatus();
+}
+
 // ---------- transcript reset + history replay
 function clearTranscript() {
   log.replaceChildren();
@@ -730,7 +830,7 @@ function ago(ms) {
 }
 
 function renderSidebar() {
-  $('#top-cwd').textContent = tilde(app.cwd);
+  renderStatus();
   const recent = $('#recent');
   recent.replaceChildren(...app.recentDirs.map((d) => {
     const li = h('li', d === app.cwd ? 'active' : '', tilde(d));
@@ -817,9 +917,11 @@ function connect() {
         Object.assign(app, { cwd: msg.cwd, recentDirs: msg.recentDirs, sessions: msg.sessions, sessionId: msg.sessionId });
         $('#cwd-input').value = tilde(msg.cwd);
         clearTranscript();
+        resetStats();
         renderSidebar();
         break;
       case 'session':
+        if (msg.sessionId !== app.sessionId && !app.running) resetStats();
         app.sessionId = msg.sessionId;
         app.sessions = msg.sessions;
         renderSidebar();
