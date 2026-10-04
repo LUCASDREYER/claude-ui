@@ -18,17 +18,25 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * Draws the Claude UI across a wall of Claude Screens. Only the bottom-left block of a valid rectangle draws; the
- * rest are just the dark glass of their model. Valid means: a full, flat rectangle of screens facing the same way,
- * at least 2 wide, with a TV-like width:height between 1.5 and 2 (2x1, 3x2, 4x2, 5x3, 7x4, 16x9, ...).
+ * Draws the Claude UI across a wall of Claude Screens. Only the bottom-left block of a rectangle draws; the rest are
+ * just the dark glass of their model. A full, flat rectangle of screens facing the same way shows the UI when it is
+ * 2 to 128 wide, up to 72 tall, and 1.3 to 3 times wider than tall (4:3 TV through ultra-wide cinema). A clean
+ * rectangle outside those limits shows what's wrong instead of staying dark.
  */
 public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEntity, ScreenRenderer.State> {
-	static final int MAX_W = 32, MAX_H = 18;
+	static final int MAX_W = 128, MAX_H = 72;
+	static final double MIN_RATIO = 1.3, MAX_RATIO = 3.0;
+	/** How far to look for a wall's edges, so oversized walls can still say they're too big. */
+	private static final int SCAN_W = 160, SCAN_H = 96;
+	/** Re-measure a wall at most this often (ticks); a 100-block-wide scan every frame would cost frame rate. */
+	private static final long REMEASURE_TICKS = 10;
+	private static final java.util.Map<Long, long[]> measured = new java.util.HashMap<>(); // pos -> {w, h, gameTime}
 	/** Canvas height in UI pixels; the width follows the wall's ratio. */
 	private static final int CANVAS_H = 270;
 
 	public static final class State extends BlockEntityRenderState {
 		int w, h;
+		boolean valid;
 		Direction facing = Direction.NORTH;
 	}
 
@@ -52,20 +60,31 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 		Level level = entity.getLevel();
 		if (level == null) return;
 		state.facing = entity.getBlockState().getValue(HorizontalDirectionalBlock.FACING);
-		int[] size = measure(level, entity.getBlockPos(), state.facing);
-		if (size != null) {
-			state.w = size[0];
-			state.h = size[1];
+		BlockPos pos = entity.getBlockPos();
+		Direction right = state.facing.getCounterClockWise();
+		// Cheap per-frame test: only the bottom-left block of a wall does anything.
+		if (is(level, pos.relative(right.getOpposite()), state.facing) || is(level, pos.below(), state.facing)) return;
+		long now = level.getGameTime();
+		long[] cached = measured.get(pos.asLong());
+		if (cached == null || now - cached[2] >= REMEASURE_TICKS || now < cached[2]) {
+			int[] size = measure(level, pos, state.facing);
+			cached = new long[] {size == null ? 0 : size[0], size == null ? 0 : size[1], now};
+			measured.put(pos.asLong(), cached);
+			if (measured.size() > 256) measured.clear();
 		}
+		state.w = (int) cached[0];
+		state.h = (int) cached[1];
+		double ratio = state.h == 0 ? 0 : state.w / (double) state.h;
+		state.valid = state.w >= 2 && state.w <= MAX_W && state.h <= MAX_H && ratio >= MIN_RATIO && ratio <= MAX_RATIO;
 	}
 
-	/** Width and height when `pos` is the bottom-left (as seen from the front) of a valid screen wall, else null. */
+	/** Width and height when `pos` is the bottom-left (as seen from the front) of a clean rectangle of screens, else null. */
 	static int[] measure(Level level, BlockPos pos, Direction facing) {
 		Direction right = facing.getCounterClockWise(); // the viewer's right
 		if (is(level, pos.relative(right.getOpposite()), facing) || is(level, pos.below(), facing)) return null;
 		int w = 1, h = 1;
-		while (w < MAX_W && is(level, pos.relative(right, w), facing)) w++;
-		while (h < MAX_H && is(level, pos.above(h), facing)) h++;
+		while (w < SCAN_W && is(level, pos.relative(right, w), facing)) w++;
+		while (h < SCAN_H && is(level, pos.above(h), facing)) h++;
 		for (int dx = 0; dx < w; dx++) {
 			for (int dy = 0; dy < h; dy++) if (!is(level, pos.relative(right, dx).above(dy), facing)) return null;
 			if (is(level, pos.relative(right, dx).below(), facing) || is(level, pos.relative(right, dx).above(h), facing)) return null;
@@ -73,8 +92,7 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 		for (int dy = 0; dy < h; dy++) {
 			if (is(level, pos.relative(right.getOpposite()).above(dy), facing) || is(level, pos.relative(right, w).above(dy), facing)) return null;
 		}
-		double ratio = w / (double) h;
-		return w >= 2 && ratio >= 1.5 && ratio <= 2.0 ? new int[] {w, h} : null;
+		return w >= 2 || h >= 2 ? new int[] {w, h} : null;
 	}
 
 	private static boolean is(Level level, BlockPos pos, Direction facing) {
@@ -85,7 +103,11 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 	@Override
 	public void submit(State state, PoseStack pose, SubmitNodeCollector out, CameraRenderState camera) {
 		if (state.w == 0) return;
-		int canvasW = Math.round(CANVAS_H * state.w / (float) state.h);
+		int canvasW = Math.max(1, Math.round(CANVAS_H * state.w / (float) state.h));
+		if (!state.valid) {
+			hint(state, pose, out, canvasW);
+			return;
+		}
 		if (view == null || viewW != canvasW || viewH != CANVAS_H) {
 			view = new ClaudeScreen(true);
 			view.init(canvasW, CANVAS_H);
@@ -93,16 +115,38 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 			viewH = CANVAS_H;
 		}
 		pose.pushPose();
-		// Block center, turned so +X is the viewer's right and +Z points out of the screen.
-		pose.translate(0.5, 0.5, 0.5);
-		pose.mulPose(Axis.YP.rotationDegrees(-state.facing.toYRot()));
-		// Top-left of the wall, just in front of the glass; then canvas pixels with y pointing down.
-		pose.translate(-0.5, -0.5 + state.h, 0.5 + 0.003);
-		pose.scale(state.w / (float) canvasW, -state.h / (float) CANVAS_H, 1f / canvasW);
+		// Block center, turned so +X is the viewer's right and +Z points out of the screen; then the wall's top-left.
+		place(state, pose, canvasW);
 		WorldCanvas canvas = new WorldCanvas(pose, out, font, LightTexture.FULL_BRIGHT, canvasW);
 		canvas.fill(0, 0, canvasW, CANVAS_H, 0xFF0C0F14);
 		view.paint(canvas, -10000, -10000);
 		pose.popPose();
+	}
+
+	/** A clean rectangle with the wrong size or shape: say what it is and what would work. */
+	private void hint(State state, PoseStack pose, SubmitNodeCollector out, int canvasW) {
+		pose.pushPose();
+		place(state, pose, canvasW);
+		WorldCanvas canvas = new WorldCanvas(pose, out, font, LightTexture.FULL_BRIGHT, canvasW);
+		double ratio = state.w / (double) state.h;
+		String problem = state.w > MAX_W || state.h > MAX_H ? "too big (max " + MAX_W + " × " + MAX_H + ")"
+			: ratio < MIN_RATIO ? "too tall for its width" : ratio > MAX_RATIO ? "too wide for its height" : "too small";
+		String[] lines = {"Claude Screen  " + state.w + " × " + state.h + ": " + problem, "Make it 1.3 to 3 times wider than tall, e.g. 8 × 4, 16 × 9 or 48 × 20"};
+		float scale = Math.min(1.5f, (canvasW - 20) / (float) Math.max(font.width(lines[0]), font.width(lines[1])));
+		int y = (int) (CANVAS_H / 2f - 11 * scale);
+		for (String line : lines) {
+			canvas.scaledText(line, (int) ((canvasW - font.width(line) * scale) / 2), y, scale, 0xFF9AA3AD);
+			y += (int) (12 * scale);
+		}
+		pose.popPose();
+	}
+
+	/** Moves the pose to the wall's top-left corner, in canvas pixels with y pointing down. */
+	private static void place(State state, PoseStack pose, int canvasW) {
+		pose.translate(0.5, 0.5, 0.5);
+		pose.mulPose(Axis.YP.rotationDegrees(-state.facing.toYRot()));
+		pose.translate(-0.5, -0.5 + state.h, 0.5 + 0.003);
+		pose.scale(state.w / (float) canvasW, -state.h / (float) CANVAS_H, 1f / canvasW);
 	}
 
 	@Override
@@ -112,6 +156,6 @@ public final class ScreenRenderer implements BlockEntityRenderer<ScreenBlockEnti
 
 	@Override
 	public int getViewDistance() {
-		return 96;
+		return 160; // cinema walls are watched from far away
 	}
 }

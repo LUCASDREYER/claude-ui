@@ -121,11 +121,11 @@ final class AutoTest {
 				for (String cmd : new String[] {
 					"time set noon",
 					"weather clear",
-					// an 8x4 wall (ratio 2) facing north, 7 blocks south of the player
-					"fill " + (x - 4) + " " + y + " " + (z + 7) + " " + (x + 3) + " " + (y + 3) + " " + (z + 7) + " claudeui:screen[facing=north]",
-					// a 3x3 wall to the side: wrong ratio, so it stays dark
-					"fill " + (x + 6) + " " + y + " " + (z + 7) + " " + (x + 8) + " " + (y + 2) + " " + (z + 7) + " claudeui:screen[facing=north]",
-					"tp @p " + x + " " + y + " " + (z + 0.5) + " 0 -4",
+					// a 48x20 cinema wall (ratio 2.4) facing north, 30 blocks south of the player
+					"fill " + (x - 24) + " " + y + " " + (z + 30) + " " + (x + 23) + " " + (y + 19) + " " + (z + 30) + " claudeui:screen[facing=north]",
+					// a 6x6 wall behind the player, facing south: wrong shape, so it should explain itself
+					"fill " + (x - 3) + " " + y + " " + (z - 8) + " " + (x + 2) + " " + (y + 5) + " " + (z - 8) + " claudeui:screen[facing=south]",
+					"tp @p " + x + " " + y + " " + (z + 0.5) + " 0 -15",
 				}) server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), cmd);
 			});
 			mc.options.hideGui = true;
@@ -138,11 +138,12 @@ final class AutoTest {
 			System.out.println("[claudeui servertest] singleplayer=" + mc.hasSingleplayerServer() + " available=" + ClaudeUIMod.screenAvailable.getAsBoolean() + " inCreativeTab=" + listed);
 		}
 		if (inWorld == 140) shot(mc, "tv-1-home");
-		if (inWorld == 145 && !m.recent.isEmpty()) {
-			m.resume(m.recent.get(0).id(), m.recent.get(0).cwd());
-			ClaudeScreen.select(ClaudeScreen.Section.SESSION);
+		if (inWorld == 145) {
+			BlockPos p = mc.player.blockPosition();
+			MinecraftServer server = mc.getSingleplayerServer();
+			server.execute(() -> server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), "tp @p " + p.getX() + " " + p.getY() + " " + (p.getZ() + 0.5) + " 180 -10"));
 		}
-		if (inWorld == 220) shot(mc, "tv-2-session");
+		if (inWorld == 220) shot(mc, "tv-2-hint");
 		if (inWorld == 240) mc.stop();
 	}
 

@@ -105,7 +105,7 @@ public final class ClaudeScreen extends Screen {
 	protected void init() {
 		if (!offscreen) current = this;
 		int tabH = 24;
-		pw = Mth.clamp(width - 20, 300, 620);
+		pw = Mth.clamp(width - 20, 300, offscreen ? Integer.MAX_VALUE : 620); // walls use their full width
 		ph = Mth.clamp(height - tabH - 12, 170, 380);
 		px = (width - pw) / 2;
 		py = (height - ph - tabH) / 2 + tabH;
