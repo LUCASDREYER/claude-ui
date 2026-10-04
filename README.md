@@ -7,3 +7,4 @@ Local web UI for Claude Code (Agent SDK) plus a terminal status line. Uses your 
 3. Pick a directory in the sidebar, chat; `Esc` stops a run; ask / accept edits / plan below the input.
 4. Status line: add to `~/.claude/settings.json` →
    `"statusLine": { "type": "command", "command": "python3 \"/path/to/claude-ui/statusline/statusline.py\"" }`
+5. macOS app: `npm run app` builds `Claude UI.app` into `~/Applications` (needs Xcode). It runs the server itself; quitting stops it.

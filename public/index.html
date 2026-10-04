@@ -296,9 +296,13 @@ const chat = $('#chat'), log = $('#log'), input = $('#input'), sendBtn = $('#sen
 const app = { ws: null, running: false, cwd: '', home: '', sessionId: null, sessions: [], recentDirs: [] };
 
 // ---------- theme
+// The macOS app shell listens for this to match its title bar.
+const postTheme = (t) => window.webkit?.messageHandlers?.theme?.postMessage(t);
+postTheme(document.documentElement.dataset.theme);
 $('#theme-btn').addEventListener('click', () => {
   const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = t;
+  postTheme(t);
   try { localStorage.setItem('theme', t); } catch {}
 });
 

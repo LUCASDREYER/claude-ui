@@ -384,9 +384,10 @@ server.listen(PORT, HOST, () => {
   if (!process.env.NO_OPEN) openWindow(url);
 });
 
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => {
-    for (const c of conns) c.stop();
-    process.exit(0);
-  });
+function shutdown() {
+  for (const c of conns) c.stop();
+  process.exit(0);
 }
+for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, shutdown);
+// Launched by the macOS app: exit when the app goes away and closes our stdin.
+if (process.env.CLAUDE_UI_APP) process.stdin.on('end', shutdown).resume();
