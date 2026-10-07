@@ -39,7 +39,6 @@ public final class ClaudeScreen extends Screen {
 	static final int TEXT = 0xFFFFFFFF, DIM = 0xFFB4B4B4, FAINT = 0xFF808080;
 	static final int ORANGE = 0xFFD97757, YELLOW = 0xFFF5C542, GREEN = 0xFF6CCB7E, RED = 0xFFEF6B6B, AQUA = 0xFF8ED8E0;
 
-	private static final Section[] TABS = {Section.HOME, Section.PROJECTS, Section.SESSIONS, Section.PRS, Section.SETTINGS, Section.SESSION};
 	private static final String[][] MODES = {
 		{"default", "ask", "Ask before edits and commands"},
 		{"acceptEdits", "accept edits", "Edits go through; commands still ask"},
@@ -104,7 +103,7 @@ public final class ClaudeScreen extends Screen {
 	@Override
 	protected void init() {
 		if (!offscreen) current = this;
-		int tabH = 24;
+		int tabH = 0; // no tab row: the sidebar covers every page
 		pw = Mth.clamp(width - 20, 300, offscreen ? Integer.MAX_VALUE : 620); // walls use their full width
 		ph = Mth.clamp(height - tabH - 12, 170, 380);
 		px = (width - pw) / 2;
@@ -248,7 +247,6 @@ public final class ClaudeScreen extends Screen {
 		}
 		seenPending = m.pending.size();
 
-		tabs(g, mx, my);
 		panel(g, px, py, pw, ph);
 		header(g);
 		sidebar(g, mx, my);
@@ -299,25 +297,6 @@ public final class ClaudeScreen extends Screen {
 			g.fill(x, y, x + w + 8, y + h, 0xF0100010);
 			for (int j = 0; j < lines.size(); j++) g.text(lines.get(j), x + 4, y + 4 + j * 10, TEXT);
 			return;
-		}
-	}
-
-	private void tabs(Canvas g, int mx, int my) {
-		int tw = 26, gap = 2, total = TABS.length * (tw + gap) - gap;
-		int x = px + (pw - total) / 2;
-		for (Section s : TABS) {
-			boolean on = s == section && !attachOpen;
-			int y = on ? py - 24 : py - 21;
-			int h = on ? 26 : 21;
-			if (on) {
-				panel(g, x, y, tw, h + 2);
-				g.fill(x + 3, py - 1, x + tw - 3, py + 3, PANEL); // merge into the frame
-			} else {
-				bevel(g, x, y, tw, h, mx >= x && mx < x + tw && my >= y && my < y + h ? 0xFFB5B5B5 : 0xFF8B8B8B);
-			}
-			icon(g, s, x + 5, y + 4, 16);
-			hit(x, y, tw, h, () -> select(s), List.of(Component.literal(label(s))));
-			x += tw + gap;
 		}
 	}
 
